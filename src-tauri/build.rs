@@ -41,7 +41,7 @@ fn configure_git_rerun(repo_root: &Path) {
 
     println!("cargo:rerun-if-changed={}", git_dir.display());
 
-    for arg in ["HEAD", "packed-refs", "refs", "logs/HEAD"] {
+    for arg in ["HEAD", "packed-refs", "refs", "logs/HEAD", "config"] {
         if let Some(path) = git_output(repo_root, &["rev-parse", "--git-path", arg]) {
             let candidate = PathBuf::from(path);
             let resolved = if candidate.is_absolute() {

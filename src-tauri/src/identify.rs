@@ -566,7 +566,7 @@ fn download_cover(release_group_id: &str) -> Result<Option<Vec<u8>>, String> {
         .timeout(Duration::from_secs(15))
         .redirect(reqwest::redirect::Policy::limited(5))
         .user_agent(format!(
-            "player/{} (https://github.com/verncat/player)",
+            "player/{} (https://github.com/NoName-Audio/player)",
             env!("CARGO_PKG_VERSION")
         ))
         .build()
