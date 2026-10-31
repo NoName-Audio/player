@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::{collections::HashSet, time::Duration};
 
 const DEFAULT_URL: &str =
-    "https://raw.githubusercontent.com/verncat/player-plugins/main/catalog.json";
+    "https://raw.githubusercontent.com/NoName-Audio/player-plugins/main/catalog.json";
 const MAX_BYTES: usize = 512 * 1024;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

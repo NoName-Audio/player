@@ -15,7 +15,7 @@ const host = usePluginHost();
 const error = ref('');
 const busy = ref('');
 const catalogPendingId = computed(() => busy.value.match(/^(?:catalog|uninstall):(.+)$/)?.[1]);
-const submissionUrl = 'https://github.com/verncat/player-plugins/blob/main/docs/catalog.md#publish';
+const submissionUrl = 'https://github.com/NoName-Audio/player-plugins/blob/main/docs/catalog.md#publish';
 async function openSubmission() {
   try { await openUrl(submissionUrl); }
   catch (e) { error.value = String(e); }

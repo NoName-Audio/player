@@ -23,11 +23,11 @@ Player is a local-first music player built with Vue 3 on the frontend and Rust o
 The project is not designed as a cloud service, a streaming client, or a multi-user system.
 
 Plugin packages and the public catalog are maintained in
-[verncat/player-plugins](https://github.com/verncat/player-plugins). The `plugins/`
+[NoName-Audio/player-plugins](https://github.com/NoName-Audio/player-plugins). The `plugins/`
 directory is a git submodule pinned to the shared SDK revision; initialize it
 with `git submodule update --init -- plugins` before building. The host runtime and
 generic capability services stay in Player. Provider IPC/network code stays in its package. Catalog requests use
-`https://raw.githubusercontent.com/verncat/player-plugins/main/catalog.json` and do
+`https://raw.githubusercontent.com/NoName-Audio/player-plugins/main/catalog.json` and do
 not automatically update installed executable code.
 
 ## 2. Technology Stack

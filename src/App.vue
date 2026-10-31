@@ -4597,7 +4597,7 @@ onUnmounted(() => {
                 :checking="aboutCheckingUpdates" :updating="aboutUpdating" :progress="aboutUpdateProgress"
                 :desktop-ready="aboutDesktopUpdateReady" :update-error="aboutUpdateError" :update-done="aboutUpdateDone"
                 @check="checkAboutUpdates" @update="doAboutUpdate" @open-release="openAboutDownloadLink"
-                @open-repository="openUrl('https://github.com/' + (aboutInfo?.release_repo || 'verncat/player'))"
+                @open-repository="openUrl('https://github.com/' + (aboutInfo?.release_repo || 'NoName-Audio/player'))"
                 @retry="loadAbout(true)" @open-external="openUrl" />
             </template>
           </SettingsView>

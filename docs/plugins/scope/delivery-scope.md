@@ -1,6 +1,6 @@
 # Native delivery and validation scope
 
-Sources: `verncat/player-plugins`; Player pins its tested commit as `plugins/`.
+Sources: `NoName-Audio/player-plugins`; Player pins its tested commit as `plugins/`.
 Release workflows initialize that submodule before Cargo resolves Rust path dependencies.
 Only the generic SDK is a Player build dependency. Providers are built and released
 by the plugin repository; catalog publication follows successful asset upload.

@@ -12,7 +12,7 @@ remain in Player.
 ## Packages and author documentation
 
 Sources, Rust SDK, tooling, examples, and the public catalog live in
-[verncat/player-plugins](https://github.com/verncat/player-plugins), pinned locally
+[NoName-Audio/player-plugins](https://github.com/NoName-Audio/player-plugins), pinned locally
 as `plugins/` for the generic SDK only. Discord and Soulseek ship independently;
 a fresh Player installation has no preinstalled providers. Initialize it before building:
 
@@ -20,10 +20,10 @@ a fresh Player installation has no preinstalled providers. Initialize it before 
 git submodule update --init -- plugins
 ```
 
-- [Repository layout](https://github.com/verncat/player-plugins/blob/main/docs/structure.md).
-- [Native package development](https://github.com/verncat/player-plugins/blob/main/docs/development.md).
-- [Rust SDK and C ABI](https://github.com/verncat/player-plugins/blob/main/docs/sdk.md).
-- [Android APK example](https://github.com/verncat/player-plugins/blob/main/examples/android-native/README.md).
+- [Repository layout](https://github.com/NoName-Audio/player-plugins/blob/main/docs/structure.md).
+- [Native package development](https://github.com/NoName-Audio/player-plugins/blob/main/docs/development.md).
+- [Rust SDK and C ABI](https://github.com/NoName-Audio/player-plugins/blob/main/docs/sdk.md).
+- [Android APK example](https://github.com/NoName-Audio/player-plugins/blob/main/examples/android-native/README.md).
 
 ## Host implementation
 

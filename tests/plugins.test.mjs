@@ -96,7 +96,7 @@ test('catalog requests the remote list once, clears old entries and only toasts 
 });
 
 test('catalog searches author and tags, sorts newest first and leaves source order intact', () => {
-  const template = ({ id: 'example.hello', name: 'Hello', description: 'Example', repository: 'https://github.com/verncat/player-plugins', addedAt: '2026-10-31', platforms: ['macos'], tags: [], image: 'https://example.org/logo.png' });
+  const template = ({ id: 'example.hello', name: 'Hello', description: 'Example', repository: 'https://github.com/NoName-Audio/player-plugins', addedAt: '2026-10-31', platforms: ['macos'], tags: [], image: 'https://example.org/logo.png' });
   const entries = [
     { ...template, id: 'example.old', name: 'Old plugin', addedAt: '2026-01-01', author: { name: 'Alice' }, tags: ['radio'] },
     { ...template, id: 'example.new', name: 'New plugin', addedAt: '2026-10-27', author: 'Alice', tags: ['radio'] },
@@ -109,7 +109,7 @@ test('catalog searches author and tags, sorts newest first and leaves source ord
 });
 
 test('catalog display metadata does not grant permissions or define executable UI contributions', () => {
-  const entry = ({ id: 'example.hello', name: 'Hello', description: 'Example', repository: 'https://github.com/verncat/player-plugins', addedAt: '2026-10-31', platforms: ['macos'], tags: [], image: 'https://example.org/logo.png' });
+  const entry = ({ id: 'example.hello', name: 'Hello', description: 'Example', repository: 'https://github.com/NoName-Audio/player-plugins', addedAt: '2026-10-31', platforms: ['macos'], tags: [], image: 'https://example.org/logo.png' });
   const displayed = catalogHelpers.catalogManifest({ ...entry, permissions: ['native.android'], contributions: [{ id: 'injected' }], script: 'malicious' });
   assert.deepEqual(displayed.permissions, []); assert.deepEqual(displayed.contributions, []);
   assert.equal(displayed.script, undefined);
@@ -252,6 +252,6 @@ test('Android catalog opens the APK installer download without treating an APK a
   const helpers={},busy={value:''},error={value:''},opened=[];
   new Function('exports','invoke','busy','error','resetPreview','showPreview','android','openUrl',code)(helpers,
     async()=>{throw new Error('APK must not be passed to the library downloader');},busy,error,()=>{},()=>{throw new Error('APK must be reviewed after installation/discovery');},{value:true},async url=>opened.push(url));
-  await helpers.loadCatalogPlugin({id:'player.soulseek',repository:'https://github.com/verncat/player-plugins',androidApkUrl:'https://github.com/verncat/player-plugins/releases/download/native-v1.0.0/player.soulseek.apk'});
+  await helpers.loadCatalogPlugin({id:'player.soulseek',repository:'https://github.com/NoName-Audio/player-plugins',androidApkUrl:'https://github.com/NoName-Audio/player-plugins/releases/download/native-v1.0.0/player.soulseek.apk'});
   assert.equal(opened.length,1);assert.match(error.value,/Find APK plugins/);assert.equal(busy.value,'');
 });

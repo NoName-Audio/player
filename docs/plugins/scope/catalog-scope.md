@@ -1,7 +1,7 @@
 # Native catalog scope
 
 Implementation: `catalog.rs`, `catalog.ts`, `PluginCatalog.vue`.
-Source: `https://raw.githubusercontent.com/verncat/player-plugins/main/catalog.json`.
+Source: `https://raw.githubusercontent.com/NoName-Audio/player-plugins/main/catalog.json`.
 
 Catalog schema 2 lists native packages only. The previous script example entry is
 removed until a compiled native artifact is published. Empty catalogs are valid.

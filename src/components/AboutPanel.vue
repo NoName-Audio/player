@@ -90,7 +90,7 @@ function openNoteLink(event: MouseEvent) {
         <p v-else>No changelog is available for this build.</p>
       </div>
       <footer class="about-footer">
-        <button type="button" class="control-button text-link" @click="emit('openExternal', 'https://github.com/' + (info?.release_repo || 'verncat/player') + '/blob/HEAD/public/licenses/third-party.txt')">Licenses <AppIcon name="external-link" :size="14" /></button>
+        <button type="button" class="control-button text-link" @click="emit('openExternal', 'https://github.com/' + (info?.release_repo || 'NoName-Audio/player') + '/blob/HEAD/public/licenses/third-party.txt')">Licenses <AppIcon name="external-link" :size="14" /></button>
       </footer>
     </template>
   </div>

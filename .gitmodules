@@ -3,4 +3,4 @@
 	url = https://github.com/michel/soulseek-rs.git
 [submodule "plugins"]
 	path = plugins
-	url = https://github.com/verncat/player-plugins.git
+	url = https://github.com/NoName-Audio/player-plugins.git
