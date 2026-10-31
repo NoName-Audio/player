@@ -348,5 +348,5 @@ If you want the full descriptive architecture document, read [DESIGN.md](./DESIG
 
 ### Plugin development
 
-See [the plugin guide](docs/plugin/readme.md) for package installation, the SDK,
-UI contributions, native capabilities and development scopes.
+See [the plugin guide](https://github.com/NoName-Audio/player-plugins/blob/main/docs/README.md) for package installation, the SDK,
+UI contributions, native capabilities and development workflows.

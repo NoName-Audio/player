@@ -1,6 +1,6 @@
 # Project Design
 
-Plugin integration is native-only (API 2, C ABI 1), defined in [docs/plugin/readme.md](docs/plugin/readme.md) and its scope documents. Native libraries/APKs generate UI data; the frontend contains no plugin interpreter. These documents supersede the older embedded Soulseek/Discord descriptions below.
+Plugin integration is native-only (API 2, C ABI 1). Native libraries/APKs generate UI data; the frontend contains no plugin interpreter. Plugin documentation and the SDK live in [player-plugins](https://github.com/NoName-Audio/player-plugins/blob/main/docs/README.md).
 
 This document describes the current design of the project as it exists in the repository today. It is intentionally descriptive rather than aspirational: it captures the actual architecture, runtime boundaries, state ownership, and known tradeoffs.
 
@@ -620,7 +620,7 @@ protocol client and network workers are not linked into Player. The generic plug
 host supplies scoped settings/secrets, staging paths, media source tokens, library
 imports and replacements. Native UI contributes search, previews and track actions.
 Desktop uses installable libraries; Android uses a separately installed APK.
-See [plugin scope](docs/plugins/scope/soulseek-scope.md).
+See [Soulseek plugin documentation](https://github.com/NoName-Audio/player-plugins/blob/main/soulseek/README.md).
 
 ### 11.2 Import, duplicates, about, demo mode
 
