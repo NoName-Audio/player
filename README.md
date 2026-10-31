@@ -336,7 +336,6 @@ pnpm android:build-deploy
 
 ## Repository notes
 
-- `soulseek-rs-repo/` contains an upstream/workbench copy of the Soulseek project.
 - `plugins/soulseek/vendor/soulseek-rs-lib/` contains the protocol library used only by the independent Soulseek plugin.
 - `src-tauri/vendor/symphonia-format-ogg/` is a patched copy of Symphonia's Ogg demuxer that fixes Opus gapless trimming; `PATCHES.md` there lists the changes.
 - `src-tauri/gen/android/` contains generated Android project files produced for the Tauri mobile target.
