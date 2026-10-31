@@ -7,13 +7,14 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 jobs:
   tag-version:
     name: Create Version Tag
     runs-on: ubuntu-latest
     env:
-      API_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
+      API_TOKEN: ${{ github.token }}
 
     steps:
       - name: Read version from Cargo.toml via GitHub API
@@ -192,3 +193,13 @@ jobs:
           with urllib.request.urlopen(request):
               pass
           PY
+
+      # Tags created with GITHUB_TOKEN do not trigger push workflows.
+      - name: Start release workflow for the new tag
+        if: steps.version.outputs.changed == 'true' && steps.tag_exists.outputs.exists != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_WORKFLOW_REF: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        run: gh workflow run release.yml --ref "$RELEASE_WORKFLOW_REF" -f tag="$RELEASE_TAG"

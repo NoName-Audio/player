@@ -202,6 +202,10 @@ TAURI_SIGNING_PRIVATE_KEY_PASSWORD='' \
 pnpm tauri build
 ```
 
+Repository API calls and release publishing use the workflow's built-in `GITHUB_TOKEN`.
+The version workflow creates the tag and explicitly dispatches the release workflow;
+it requires `contents: write` and `actions: write`. No personal `RELEASE_TOKEN` is required.
+
 ## Tech Stack
 
 - Frontend: Vue 3, TypeScript, Vite.
