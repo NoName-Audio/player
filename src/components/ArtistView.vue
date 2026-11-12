@@ -6,7 +6,7 @@ import { isVariousArtists } from "../utils/artists";
 import { useTrackActions } from "../composables/useTrackActions";
 import PageHeader from "./PageHeader.vue";
 import TrackRow from "./TrackRow.vue";
-import AlbumCard from "./AlbumCard.vue";
+import AlbumCard from "../plugins/AlbumCard";
 
 const props = defineProps<{
   name: string;

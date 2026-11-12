@@ -43,6 +43,8 @@ pub struct Manifest {
     pub permissions: Vec<String>,
     #[serde(default)]
     pub contributions: Vec<Contribution>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<Attachment>,
 }
 
 /// An installed APK pinned during discovery. This is unrestricted native code.
@@ -154,6 +156,32 @@ pub struct Contribution {
     pub slot: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub show_in_menu: Option<bool>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Attachment {
+    pub id: String,
+    pub target: String,
+    pub position: AttachmentPosition,
+    pub view: String,
+    #[serde(default)]
+    pub order: i32,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AttachmentPosition {
+    Before,
+    After,
+}
+
+pub fn valid_attachment_target(target: &str) -> bool {
+    !target.is_empty()
+        && target.len() <= 128
+        && target
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -433,6 +461,22 @@ impl Manifest {
                 return Err("showInMenu is only valid for page contributions".into());
             }
         }
+        if m.attachments.len() > 32 {
+            return Err("Too many plugin attachments".into());
+        }
+        let mut attachment_ids = std::collections::HashSet::new();
+        for attachment in &m.attachments {
+            if !valid_local_id(&attachment.id)
+                || !attachment_ids.insert(&attachment.id)
+                || !valid_local_id(&attachment.view)
+                || !valid_attachment_target(&attachment.target)
+            {
+                return Err("Invalid or duplicate attachment".into());
+            }
+        }
+        if !m.attachments.is_empty() && !m.permissions.iter().any(|p| p == "ui") {
+            return Err("UI attachments require ui permission".into());
+        }
         if !m.contributions.is_empty() && !m.permissions.iter().any(|p| p == "ui") {
             return Err("UI contributions require ui permission".into());
         }
@@ -497,6 +541,7 @@ mod tests {
                 platforms: vec!["linux".into(), "macos".into(), "windows".into()],
                 permissions: vec![],
                 contributions: vec![],
+                attachments: vec![],
             },
             native: fixture_native(),
         }
@@ -694,5 +739,44 @@ mod tests {
         let mut p = package();
         p.manifest.api_version = 1;
         assert!(p.validate().is_err());
+    }
+}
+
+#[cfg(test)]
+mod attachment_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn attachments_are_optional_strict_and_permission_checked() {
+        let mut manifest = fixture_manifest();
+        manifest.attachments.clear();
+        assert!(serde_json::to_value(&manifest)
+            .unwrap()
+            .get("attachments")
+            .is_none());
+        let declaration =
+            json!({"id":"extra", "target":"AlbumCard", "position":"before", "view":"details"});
+        let attachment: Attachment = serde_json::from_value(declaration.clone()).unwrap();
+        assert_eq!(attachment.order, 0);
+        manifest.attachments = vec![attachment.clone()];
+        manifest.permissions.retain(|permission| permission != "ui");
+        assert!(manifest.validate().is_err());
+        manifest.permissions.push("ui".into());
+        manifest.validate().unwrap();
+        manifest.attachments.push(attachment);
+        assert!(manifest.validate().is_err());
+        manifest.attachments.pop();
+        manifest.attachments[0].target = "bad target".into();
+        assert!(manifest.validate().is_err());
+        for (key, value) in [
+            ("position", json!("inside")),
+            ("unknown", json!(true)),
+            ("order", json!(2147483648_i64)),
+        ] {
+            let mut invalid = declaration.clone();
+            invalid[key] = value;
+            assert!(serde_json::from_value::<Attachment>(invalid).is_err());
+        }
     }
 }

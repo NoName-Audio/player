@@ -5,10 +5,15 @@ export interface Contribution {
   /** Pages appear in the sidebar by default; false keeps only their route. */
   showInMenu?: boolean;
 }
+export interface Attachment {
+  id: string; target: string; position: 'before' | 'after'; view: string; order: number;
+}
+export interface UiAttachment extends Attachment { pluginId: string; key: string; generation: number }
 export interface PluginManifest {
   id: string; name: string; version: string; apiVersion: number; description: string;
   image?: string | null; pollIntervalMs?: number;
   platforms: string[]; permissions: string[]; contributions: Contribution[];
+  attachments?: Attachment[];
   author?: string | { name: string; url?: string | null } | null;
   homepage?: string | null; repository?: string | null;
   androidNative?: { packageName: string; entryClass: string; certificateSha256: string; apkSha256: string } | null;
@@ -26,6 +31,11 @@ export interface PluginCatalogListing {
   platform: string;
 }
 export interface AndroidPluginDiscovery { supported: boolean; plugins: Array<PluginPreview & { content: string }>; warnings: string[] }
+export interface AndroidCatalogInstallResult {
+  status: 'installed' | 'cancelled' | 'permission-denied' | 'failed';
+  message?: string;
+  preview?: PluginPreview & { content: string };
+}
 export interface PluginInfo {
   manifest: PluginManifest; supported: boolean; enabled: boolean;
   generation: number; fingerprint: string;

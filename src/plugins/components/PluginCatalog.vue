@@ -54,7 +54,7 @@ onUnmounted(() => { disposed = true; });
       </div>
       <div class="catalog-footer">
         <ul class="catalog-tags" aria-label="Tags"><li v-for="tag in tags(entry)" :key="tag">{{ tag }}</li></ul>
-        <button type="button" class="control-button control-button-compact" :disabled="busy || (!installed(entry.id) && !supported(entry))" :aria-busy="pendingId === entry.id" @click="installed(entry.id) ? emit('uninstall', entry.id) : emit('review', entry)">{{ installed(entry.id) ? 'Uninstall' : listing?.platform === 'android' && entry.androidApkUrl ? 'Download APK' : 'Install' }}</button>
+        <button type="button" class="control-button control-button-compact" :disabled="busy || (!installed(entry.id) && !supported(entry))" :aria-busy="pendingId === entry.id" @click="installed(entry.id) ? emit('uninstall', entry.id) : emit('review', entry)">{{ pendingId === entry.id ? (installed(entry.id) ? 'Uninstalling…' : listing?.platform === 'android' && entry.androidApkUrl ? 'Installing APK…' : 'Loading…') : installed(entry.id) ? 'Uninstall' : 'Install' }}</button>
       </div>
     </article>
   </section>

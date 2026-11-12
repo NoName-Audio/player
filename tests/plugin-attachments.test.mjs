@@ -1,0 +1,32 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { readFileSync } from 'node:fs';
+import ts from 'typescript';
+const exports = {};
+new Function('exports', ts.transpileModule(readFileSync(new URL('../src/plugins/attachmentQueue.ts', import.meta.url), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText)(exports);
+const settle = () => new Promise(resolve => setImmediate(resolve));
+test('attachment queue bounds concurrency, coalesces pending contexts and cancels unmounted work', async () => {
+  const q = exports.createAttachmentQueue(2);
+  const releases = [];
+  let active = 0; let maximum = 0;
+  const seen = [];
+  const job = name => async () => { active++; maximum = Math.max(maximum, active); seen.push(name); await new Promise(resolve => releases.push(resolve)); active--; };
+  const a = {}, b = {}, c = {}, d = {};
+  q.schedule(a, job('a')); q.schedule(b, job('b')); await settle();
+  q.schedule(c, job('old')); q.schedule(c, job('latest')); q.schedule(d, job('cancelled')); q.cancel(d);
+  assert.deepEqual(seen, ['a', 'b']);
+  releases.shift()(); await settle();
+  assert.deepEqual(seen, ['a', 'b', 'latest']);
+  assert.equal(maximum, 2);
+  releases.splice(0).forEach(resolve => resolve()); await settle();
+});
+test('an active attachment never overlaps itself and keeps only its latest update', async () => {
+  const q = exports.createAttachmentQueue(4), key = {}, seen = [];
+  let release;
+  q.schedule(key, async () => { seen.push('active'); await new Promise(resolve => { release = resolve; }); });
+  await settle();
+  q.schedule(key, async () => { seen.push('old'); });
+  q.schedule(key, async () => { seen.push('latest'); });
+  await settle(); assert.deepEqual(seen, ['active']);
+  release(); await settle(); assert.deepEqual(seen, ['active', 'latest']);
+});

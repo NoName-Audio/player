@@ -278,6 +278,53 @@ fn backend(
         NativePackage::AndroidApk => Ok(Backend::Android),
     }
 }
+// Attachment metadata is a host-owned scope, never an arbitrary plugin view selector.
+fn validate_attachment_scope(
+    manifest: &super::model::Manifest,
+    method: &str,
+    args: &Value,
+) -> Result<(), String> {
+    let scoped = method == "renderAttachment"
+        || (method == "action"
+            && ["attachmentId", "target", "instanceId"]
+                .iter()
+                .any(|key| args.get(key).is_some()));
+    if !scoped {
+        return Ok(());
+    }
+    if !manifest
+        .permissions
+        .iter()
+        .any(|permission| permission == "ui")
+    {
+        return Err("PERMISSION_DENIED: ui".into());
+    }
+    let attachment = args["attachmentId"]
+        .as_str()
+        .and_then(|id| {
+            manifest
+                .attachments
+                .iter()
+                .find(|attachment| attachment.id == id)
+        })
+        .ok_or("Unknown attachment")?;
+    if args["viewId"].as_str() != Some(attachment.view.as_str())
+        || args["target"].as_str() != Some(attachment.target.as_str())
+    {
+        return Err("Attachment scope mismatch".into());
+    }
+    let instance = args["instanceId"]
+        .as_str()
+        .ok_or("Missing attachment instance")?;
+    if instance.is_empty() || instance.len() > 256 || instance.chars().any(char::is_control) {
+        return Err("Invalid attachment instance".into());
+    }
+    if !args.get("context").is_some_and(Value::is_object) {
+        return Err("Missing attachment context".into());
+    }
+    Ok(())
+}
+
 fn dispatch(
     activation: &mut Activation,
     context: &mut Context,
@@ -381,6 +428,7 @@ pub async fn plugin_native_call(
         "activate",
         "poll",
         "render",
+        "renderAttachment",
         "action",
         "search",
         "renderSearch",
@@ -403,6 +451,11 @@ pub async fn plugin_native_call(
             generation,
         };
         context.active()?;
+        validate_attachment_scope(
+            &app.state::<PluginState>().manifest(&plugin_id)?,
+            &method,
+            &args,
+        )?;
         let runtime = app.state::<NativeRuntime>();
         let activation = {
             let mut activations = runtime.activations.lock().map_err(|e| e.to_string())?;
@@ -675,6 +728,15 @@ mod tests {
                 invoke("render", json!({"viewId":"home"})).unwrap()["title"],
                 "Native ABI works"
             );
+            let mut scope = json!({"attachmentId":"album-greeting","viewId":"album-greeting",
+                "target":"AlbumCard","instanceId":"native-card-1","context":{"album":{"album":"Native album"}}});
+            validate_attachment_scope(&package.manifest, "renderAttachment", &scope).unwrap();
+            assert_eq!(
+                invoke("renderAttachment", scope.clone()).unwrap()["children"][0]["text"],
+                "Hello, Native album!"
+            );
+            scope["context"] = json!({});
+            assert_eq!(invoke("renderAttachment", scope).unwrap(), Value::Null);
             assert!(invoke("unknown", json!({})).is_err());
             invoke("deactivate", json!({})).unwrap();
             destroy(instance);
@@ -696,5 +758,40 @@ mod tests {
         assert!(plugin_native_reply(id, "example.a".into(), 4, Some(json!(1)), None).is_err());
         plugin_native_reply(id, "example.a".into(), 5, Some(json!(1)), None).unwrap();
         assert_eq!(receive.recv().unwrap().unwrap(), json!(1));
+    }
+}
+
+#[cfg(test)]
+mod attachment_tests {
+    use super::*;
+
+    #[test]
+    fn attachment_renders_and_actions_require_declared_scope() {
+        let mut manifest = super::super::model::fixture_manifest();
+        manifest.permissions.push("ui".into());
+        manifest.attachments = vec![serde_json::from_value(json!({
+            "id":"extra", "view":"details", "target":"AlbumCard", "position":"after"
+        }))
+        .unwrap()];
+        let args = json!({"attachmentId":"extra", "viewId":"details", "target":"AlbumCard",
+            "instanceId":"host-instance-1", "context":{"album":{"album":"Example"}}});
+        for method in ["renderAttachment", "action"] {
+            validate_attachment_scope(&manifest, method, &args).unwrap();
+            for (key, value) in [
+                ("attachmentId", json!("unknown")),
+                ("viewId", json!("other")),
+                ("target", json!("OtherCard")),
+                ("instanceId", json!("")),
+                ("context", Value::Null),
+            ] {
+                let mut invalid = args.clone();
+                invalid[key] = value;
+                assert!(validate_attachment_scope(&manifest, method, &invalid).is_err());
+            }
+        }
+        manifest.permissions.retain(|permission| permission != "ui");
+        assert!(validate_attachment_scope(&manifest, "renderAttachment", &args).is_err());
+        validate_attachment_scope(&manifest, "render", &json!({"viewId":"legacy"})).unwrap();
+        validate_attachment_scope(&manifest, "action", &json!({"viewId":"legacy"})).unwrap();
     }
 }

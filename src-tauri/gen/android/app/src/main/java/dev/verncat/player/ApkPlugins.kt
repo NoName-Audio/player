@@ -45,6 +45,13 @@ internal class ApkDeactivateArgs {
     var generation: Long = 0
 }
 
+@InvokeArg
+internal class ApkInstallArgs {
+    lateinit var url: String
+    lateinit var expectedId: String
+    lateinit var expectedVersion: String
+}
+
 /** Installed APKs only. Code executes with Player's permissions, in Player's process. */
 @TauriPlugin
 class ApkPlugins(private val activity: Activity) : Plugin(activity) {
@@ -56,8 +63,9 @@ class ApkPlugins(private val activity: Activity) : Plugin(activity) {
     private val runtime = synchronized(executor) {
         sharedRuntime ?: InstalledApkRuntime(activity.applicationContext).also { sharedRuntime = it }
     }
+    private val installer = CatalogApkInstaller(activity, runtime, ::startActivityForResult)
 
-    override fun onDestroy() { executor.execute { runtime.closeAll() } }
+    override fun onDestroy() { installer.close(); executor.execute { runtime.closeAll() } }
 
     private fun perform(invoke: Invoke, block: () -> JSObject) {
         executor.execute {
@@ -73,6 +81,11 @@ class ApkPlugins(private val activity: Activity) : Plugin(activity) {
     @Command fun discover(invoke: Invoke) = perform(invoke) { runtime.discover() }
     @Command fun call(invoke: Invoke) = perform(invoke) { runtime.call(invoke.parseArgs(ApkCallArgs::class.java)) }
     @Command fun deactivate(invoke: Invoke) = perform(invoke) { runtime.deactivate(invoke.parseArgs(ApkDeactivateArgs::class.java)) }
+    @Command fun installCatalog(invoke: Invoke) = installer.install(invoke)
+    @app.tauri.annotation.ActivityCallback
+    fun catalogPermissionResult(invoke: Invoke, result: androidx.activity.result.ActivityResult) = installer.permissionResult(invoke)
+    @app.tauri.annotation.ActivityCallback
+    fun catalogInstallResult(invoke: Invoke, result: androidx.activity.result.ActivityResult) = installer.installResult(invoke, result)
 }
 
 /** Access is serialized by the Tauri adapter. Kept separate for device integration tests. */
@@ -81,7 +94,7 @@ internal class InstalledApkRuntime(private val context: Context, private val hos
     private val loaded = mutableMapOf<String, Loaded>()
     private val minimumGeneration = mutableMapOf<String, Long>()
 
-    private data class Descriptor(
+    internal data class Descriptor(
         val pkg: PackageInfo, val id: String, val entry: String,
         val certificate: String, val hash: String, val content: String,
     )
@@ -98,10 +111,24 @@ internal class InstalledApkRuntime(private val context: Context, private val hos
         MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
 
     @Suppress("DEPRECATION")
-    private fun descriptor(packageName: String): Descriptor {
-        val flags = PackageManager.GET_META_DATA or PackageManager.GET_SIGNATURES or
-            (if (Build.VERSION.SDK_INT >= 28) PackageManager.GET_SIGNING_CERTIFICATES else 0)
+    internal fun descriptor(packageName: String): Descriptor {
+        val flags = archiveFlags()
         val pkg = context.packageManager.getPackageInfo(packageName, flags)
+        return describe(pkg, File(requireNotNull(pkg.applicationInfo).sourceDir))
+    }
+
+    internal fun archive(file: File): Descriptor {
+        val pkg = requireNotNull(context.packageManager.getPackageArchiveInfo(file.absolutePath, archiveFlags())) { "Invalid APK archive" }
+        require(pkg.packageName != context.packageName) { "Cannot install Player as a plugin" }
+        return describe(pkg, file)
+    }
+
+    private fun archiveFlags() = PackageManager.GET_META_DATA or PackageManager.GET_SIGNATURES or
+        (if (Build.VERSION.SDK_INT >= 28) PackageManager.GET_SIGNING_CERTIFICATES else 0)
+
+    @Suppress("DEPRECATION")
+    private fun describe(pkg: PackageInfo, file: File): Descriptor {
+        val packageName = pkg.packageName
         val app = requireNotNull(pkg.applicationInfo)
         require(app.splitSourceDirs.isNullOrEmpty()) { "Split APK plugins are not supported; use a universal APK" }
         val meta = requireNotNull(app.metaData) { "Missing plugin metadata" }
@@ -112,7 +139,7 @@ internal class InstalledApkRuntime(private val context: Context, private val hos
         val signatures = requireNotNull(if (Build.VERSION.SDK_INT >= 28) pkg.signingInfo?.apkContentsSigners else pkg.signatures)
         require(signatures.size == 1) { "APK must have exactly one current signer" }
         val certificate = digest(signatures[0].toByteArray())
-        val file = File(app.sourceDir)
+        require(packageName != context.packageName) { "Player cannot be a plugin" }
         require(file.length() in 1..64L * 1024 * 1024) { "Plugin APK exceeds 64 MiB" }
         val hash = MessageDigest.getInstance("SHA-256").let { hasher ->
             file.inputStream().buffered().use { stream ->

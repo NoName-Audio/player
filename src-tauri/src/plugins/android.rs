@@ -45,6 +45,34 @@ pub async fn plugins_android_discover() -> Result<Value, String> {
     }).await.map_err(|e| e.to_string())?
 }
 
+/// OS installation does not authorize the plugin. Return a preview for explicit review.
+#[tauri::command]
+pub async fn plugins_android_install_catalog(
+    url: String,
+    expected_id: String,
+    expected_version: String,
+) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut result = mobile_call("installCatalog", json!({
+            "url": url, "expectedId": expected_id, "expectedVersion": expected_version,
+        }))?;
+        if result["status"] == "installed" {
+            let content = result["content"].as_str().ok_or("Missing installed APK package")?;
+            let package = Package::parse(content)?;
+            if package.manifest.id != expected_id || package.manifest.version != expected_version
+                || package.manifest.android_native.is_none() {
+                return Err("Installed APK identity does not match the requested plugin".into());
+            }
+            result["preview"] = json!({
+                "content": content, "manifest": package.manifest,
+                "fingerprint": package.fingerprint(),
+            });
+            result.as_object_mut().ok_or("Invalid Android install response")?.remove("content");
+        }
+        Ok(result)
+    }).await.map_err(|e| e.to_string())?
+}
+
 #[cfg(target_os = "android")]
 pub fn mobile_plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
     tauri::plugin::Builder::new("player-extensions")
