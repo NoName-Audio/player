@@ -6,6 +6,14 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ApkPluginsTest {
+    @Test fun callbackInterfaceRetainsItsReleaseAbi() {
+        val type = kotlin.jvm.functions.Function2::class.java
+        assertEquals("kotlin.jvm.functions.Function2", type.name)
+        val invoke = type.getMethod("invoke", Any::class.java, Any::class.java)
+        val callback: (String, String) -> String = { method, arguments -> "$method:$arguments" }
+        assertEquals("ping:{}", invoke.invoke(callback, "ping", "{}"))
+    }
+
     @Test fun installedApkLoadsRustAndEnforcesIdentityAndLifecycle() {
         var settings = JSONObject("{\"revision\":0,\"values\":{}}")
         val runtime = InstalledApkRuntime(InstrumentationRegistry.getInstrumentation().targetContext) { _, method, arguments ->
