@@ -710,7 +710,7 @@ fn run_identify(
                 start_secs,
                 end_secs,
             ),
-            crate::library::TrackSource::SoulseekPreview { .. } => {
+            crate::library::TrackSource::GrowingFile { .. } => {
                 Err("Only library tracks can be identified".into())
             }
         };

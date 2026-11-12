@@ -219,11 +219,11 @@ it requires `contents: write` and `actions: write`. No personal `RELEASE_TOKEN` 
 - File watching: notify.
 - LAN discovery: mdns-sd.
 - Sync transport: tiny_http + reqwest.
-- Soulseek: soulseek-rs (vendored).
+- Optional Soulseek plugin: own vendored soulseek-rs client in player-plugins.
 - Audio identification: rusty-chromaprint + AcoustID.
 - 3D visuals: Three.js.
 - Icons: Lucide.
-- Discord Rich Presence: discord-rich-presence.
+- Optional Discord plugin: owns its discord-rich-presence dependency in player-plugins.
 - Logging and profiling: tracing, optional Tracy.
 
 ## Architecture at a glance
@@ -245,7 +245,7 @@ Main source files:
 - `src-tauri/src/audio_codecs.rs`: the codecs playback decodes with, including Opus through libopus.
 - `src-tauri/src/discovery.rs`: peer discovery.
 - `src-tauri/src/sync.rs`: sync protocol, peer HTTP server, remote playback.
-- `src-tauri/src/soulseek.rs`: Soulseek integration.
+- `src-tauri/src/plugins/`: generic native plugin host; Soulseek and Discord are separate installable packages.
 
 For a deeper architecture write-up, see [DESIGN.md](./DESIGN.md).
 
@@ -262,7 +262,11 @@ For a deeper architecture write-up, see [DESIGN.md](./DESIGN.md).
 
 ### Install
 
+Plugin sources come from [player-plugins](https://github.com/NoName-Audio/player-plugins),
+pinned as the `plugins/` git submodule. Initialize it before building or running tests:
+
 ```bash
+git submodule update --init -- plugins
 pnpm install
 ```
 
@@ -332,8 +336,7 @@ pnpm android:build-deploy
 
 ## Repository notes
 
-- `soulseek-rs-repo/` contains an upstream/workbench copy of the Soulseek project.
-- `src-tauri/vendor/soulseek-rs-lib/` contains the vendored library currently used by the app.
+- `plugins/soulseek/vendor/soulseek-rs-lib/` contains the protocol library used only by the independent Soulseek plugin.
 - `src-tauri/vendor/symphonia-format-ogg/` is a patched copy of Symphonia's Ogg demuxer that fixes Opus gapless trimming; `PATCHES.md` there lists the changes.
 - `src-tauri/gen/android/` contains generated Android project files produced for the Tauri mobile target.
 
@@ -342,3 +345,8 @@ pnpm android:build-deploy
 This project is actively evolving. The architecture is intentionally pragmatic: some surfaces are already well-isolated, while others are still consolidated to keep product iteration fast.
 
 If you want the full descriptive architecture document, read [DESIGN.md](./DESIGN.md).
+
+### Plugin development
+
+See [the plugin guide](https://github.com/NoName-Audio/player-plugins/blob/main/docs/README.md) for package installation, the SDK,
+UI contributions, native capabilities and development workflows.

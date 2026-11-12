@@ -15,7 +15,7 @@ new Function('exports', ts.transpileModule(readFileSync(new URL('../src/utils/pr
 }).outputText)(progressHelpers);
 const { progressSegments } = progressHelpers;
 const plain = value => JSON.parse(JSON.stringify(value));
-const listNames = ['libraryTracks', 'recentTracks', 'localSearchTracks', 'queue', 'queueLibraryTracks', 'queuePlaylistTracks', 'queueSoulseekTracks', 'smartViewTracks'];
+const listNames = ['libraryTracks', 'recentTracks', 'localSearchTracks', 'queue', 'queueLibraryTracks', 'queuePlaylistTracks', 'queuePluginTracks', 'smartViewTracks'];
 const saved = { id: 1, title: 'Круги на воде', artist: 'Слот', album: 'Septima', manually_edited: true, album_artist_or_artist: 'Слот', cover_hash: 'recognized-cover' };
 
 function harness() {

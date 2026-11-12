@@ -1,0 +1,24 @@
+.plugin-native-note { color: var(--color-text-muted); font-size: var(--fs-body-sm); }
+.plugin-manager { display: grid; gap: 16px; color: var(--color-text-muted); font-size: 14px; }.plugin-manager h3,.plugin-manager h4,.plugin-manager p { margin: 0; }
+.plugin-manager p { color: var(--color-text-muted); line-height: 1.6; }
+.plugin-card { display: grid; gap: 20px; }
+.plugin-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.plugin-actions:empty { display: none; }
+.plugin-install-actions { flex-wrap: nowrap; align-items: center; }
+.plugin-install-actions > .control-button-primary { flex-shrink: 1; min-width: 0; }
+.plugin-heading { display: flex; justify-content: space-between; align-items: center; gap: 20px; }
+.plugin-heading > div { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.plugin-heading h4 { margin-bottom: 8px; color: var(--color-text); font-size: 16px; }
+.plugin-title-link { padding: 0; border: 0; border-radius: 3px; background: transparent; color: inherit; font: inherit; text-align: start; cursor: pointer; }
+.plugin-title-link:hover { color: var(--color-accent-text); text-decoration: underline; text-underline-offset: 3px; }
+.plugin-title-link:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 3px; }
+.plugin-catalog-submission { padding: 12px 0; border-top: 1px solid var(--color-border); }
+.plugin-catalog-submission a { display: inline-flex; align-items: center; gap: 6px; color: var(--color-accent-text); font-size: 14px; font-weight: 600; text-decoration: underline; text-underline-offset: 3px; }
+.plugin-catalog-submission a:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 3px; }
+.plugin-heading h4 small { margin-inline-start: 4px; }
+.plugin-card > strong { color: var(--color-text); font-size: 16px; }
+.plugin-card small { color: var(--color-text-muted); }.plugin-card button { justify-self: start; }
+.plugin-install { display: grid; gap: 12px; margin-top: 16px; }.plugin-install label,.plugin-url { display: grid; gap: 12px; }
+.plugin-url-row { display: flex; gap: 10px; }.plugin-url-row input { flex: 1; }
+.fingerprint { overflow-wrap: anywhere; }.error { color: var(--color-danger-text) !important; }
+@media(max-width: 600px) { .plugin-url-row { flex-direction: column; } }

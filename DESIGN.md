@@ -1,5 +1,7 @@
 # Project Design
 
+Plugin integration is native-only (API 2, C ABI 1). Native libraries/APKs generate UI data; the frontend contains no plugin interpreter. Plugin documentation and the SDK live in [player-plugins](https://github.com/NoName-Audio/player-plugins/blob/main/docs/README.md).
+
 This document describes the current design of the project as it exists in the repository today. It is intentionally descriptive rather than aspirational: it captures the actual architecture, runtime boundaries, state ownership, and known tradeoffs.
 
 ## 1. Purpose
@@ -20,6 +22,14 @@ Player is a local-first music player built with Vue 3 on the frontend and Rust o
 
 The project is not designed as a cloud service, a streaming client, or a multi-user system.
 
+Plugin packages and the public catalog are maintained in
+[NoName-Audio/player-plugins](https://github.com/NoName-Audio/player-plugins). The `plugins/`
+directory is a git submodule pinned to the shared SDK revision; initialize it
+with `git submodule update --init -- plugins` before building. The host runtime and
+generic capability services stay in Player. Provider IPC/network code stays in its package. Catalog requests use
+`https://raw.githubusercontent.com/NoName-Audio/player-plugins/main/catalog.json` and do
+not automatically update installed executable code.
+
 ## 2. Technology Stack
 
 - Frontend: Vue 3 + TypeScript + Vite.
@@ -32,7 +42,7 @@ The project is not designed as a cloud service, a streaming client, or a multi-u
 - Metadata extraction: lofty.
 - LAN discovery: mdns-sd.
 - Peer sync transport: tiny_http server + reqwest blocking client.
-- Soulseek client: soulseek-rs, vendored at `src-tauri/vendor/soulseek-rs-lib` (the `soulseek-rs-repo/` submodule is an upstream workbench copy, not a build dependency).
+- Optional Soulseek client: compiled only in the independent plugin; its vendored source lives in `plugins/soulseek/vendor/soulseek-rs-lib`.
 - Cover resizing: image.
 - Audio identification: rusty-chromaprint + AcoustID.
 - Rich now-playing visual: Three.js in a dedicated Vue component.
@@ -49,7 +59,7 @@ Frontend:
 - [src/composables/useTrackActions.ts](src/composables/useTrackActions.ts): the track actions (like, edit, menus, opening artist and album pages) that App.vue provides to track lists.
 - [src/composables/useHistoryNavigation.ts](src/composables/useHistoryNavigation.ts): back/forward navigation kept in the browser history, and transient history entries for UI state that back should undo.
 - [src/composables/useTheme.ts](src/composables/useTheme.ts): theme mode and accent preferences, and animated theme switches.
-- [src/composables/useAppearance.ts](src/composables/useAppearance.ts) and [src/composables/useDiscordPresence.ts](src/composables/useDiscordPresence.ts): appearance preferences and the Discord Rich Presence adapter.
+- [src/composables/useAppearance.ts](src/composables/useAppearance.ts) and [src/plugins/host.ts](src/plugins/host.ts): appearance preferences and the Discord Rich Presence adapter.
 - [src/api.ts](src/api.ts): the start of a frontend API layer (artist and album queries).
 - [src/utils/](src/utils/): formatting, rarity helpers, special artist names, cover URLs and placeholder cover gradients, color math.
 - [src/icons.ts](src/icons.ts) and [src/types/settings.ts](src/types/settings.ts): the icon registry, and the settings sections and types.
@@ -65,11 +75,9 @@ Backend, one module per subsystem:
 - [src-tauri/src/audio.rs](src-tauri/src/audio.rs): output device enumeration and auxiliary audio settings state.
 - [src-tauri/src/discovery.rs](src-tauri/src/discovery.rs): mDNS peer discovery.
 - [src-tauri/src/sync.rs](src-tauri/src/sync.rs): peer HTTP server, file transfer, metadata merge, and remote playback.
-- [src-tauri/src/soulseek.rs](src-tauri/src/soulseek.rs): Soulseek search, preview, and download.
 - [src-tauri/src/identify.rs](src-tauri/src/identify.rs): audio fingerprinting and AcoustID lookup.
 - [src-tauri/src/import.rs](src-tauri/src/import.rs): drag-and-drop import into the library.
 - [src-tauri/src/about.rs](src-tauri/src/about.rs): version info and updates.
-- [src-tauri/src/discord_presence.rs](src-tauri/src/discord_presence.rs): optional Discord Rich Presence.
 - [src-tauri/src/demo.rs](src-tauri/src/demo.rs): the `--demo` mode library.
 
 Android:
@@ -244,6 +252,10 @@ The current visual system combines music metadata with generated decoration:
 - Beat events animate player controls and art using a decaying pulse model.
 - Mobile typography, footer sizing, drawer navigation, and long-press menus were added to keep the same UI viable on phones.
 
+Text and password fields in settings and declarative plugin views share `.form-field` and `.form-input` from [src/styles/form-controls.css](src/styles/form-controls.css). Use these classes for the same transparent background, strong border, spacing, typography, focus ring, and disabled state as Device name. Plugin fields are styled by the host rather than by individual plugins.
+
+Plugin controls must reuse Player's shared styles and components. Standard action buttons in playlists, track editing, settings, About, confirmation popups, and plugin views use `.control-button` from [src/styles/button-controls.css](src/styles/button-controls.css), with `.control-button-primary` for accent actions and `.control-button-compact` for compact layouts. File pickers use `.form-file`; plugin toggles use [SettingsToggle](src/components/SettingsToggle.vue). Sizes use the common responsive tokens. Feature styles define layout, not separate copies of control appearance; this also applies to plugin catalog search and installation fields.
+
 ### 5.8 WebGL now-playing component
 
 [src/components/WebGLAlbumRenderer.vue](src/components/WebGLAlbumRenderer.vue) isolates the 3D portion of the now-playing detail card. It receives:
@@ -274,7 +286,6 @@ This keeps the rendering code separate while the rest of the visual chrome remai
 - Library shows the data folder, indexing progress, a Show duplicates switch, and access to duplicate review and identification. The switch controls the existing shared duplicate filter.
 - About includes a Licenses link opening `public/licenses/third-party.txt` in the GitHub repository default branch. The file must be published with the app source for the link to resolve. `pnpm build` runs `scripts/generate-licenses.mjs` to collect installed npm runtime dependencies and Cargo dependencies for the build target into `public/licenses/third-party.txt`. Bundled license and notice files are preserved; packages declaring only an SPDX identifier use standard texts from `spdx-license-list`. Packages with no license metadata are explicitly identified. `LICENSES_TARGET` can override the target, otherwise the Tauri target, Cargo target, or Rust host is used. Run `pnpm licenses:generate` to refresh the file for development.
 - Playback shares audio output and sample rate state with the footer device picker.
-- Discord RPC has its own settings section for the optional Discord Rich Presence integration. It is disabled by default and stored per device. The frontend adapter sends playback snapshots to an isolated native worker with throttled updates and reconnects. The `discord-rpc` Cargo feature (on by default, desktop only) can omit the implementation and dependency; `DISCORD_CLIENT_ID` overrides the built-in public application ID at compile time ([src-tauri/src/discord_presence.rs](src-tauri/src/discord_presence.rs)).
 - Devices & Sync edits this device identity and controls the existing LAN sync setting. Peer management stays in the Devices view.
 - Soulseek owns credential drafts with explicit Save and Cancel actions. Device and Soulseek forms read the latest saved configuration before writing, so saving one form preserves the other settings.
 - Appearance holds the theme mode, accent color, header gradient and tint (through `useTheme`, built from the generic `SegmentedControl`, `SwatchPicker`, `CustomColorSwatch` and `RangeSlider` components) and the motion preferences, all device-local in localStorage. Motion preferences go through [src/composables/useAppearance.ts](src/composables/useAppearance.ts). Reduced motion also respects the system preference, stops beat and cover motion, and uses a still cover. The 3D cover and rarity animations can be controlled independently.
@@ -282,7 +293,47 @@ This keeps the rendering code separate while the rest of the visual chrome remai
 
 Device identity and Soulseek credentials keep their existing SQLite persistence. Appearance preferences are separate from music metadata and are not synced. Long-running actions report progress, and setting failures remain visible next to the affected controls.
 
-### 5.10 Reusable segmented progress
+### 5.10 Buttons that wait for an operation
+
+**Required for all existing and new buttons that start an asynchronous operation:** show the shared loading state on the initiating button for the entire wait. This applies throughout Player and plugin UI, including requests, searches, saving, installation, retries, scanning, and sync.
+
+- Bind `:aria-busy="pending"` and `:disabled="pending || otherDisabledConditions"` to the button. Guard the handler against duplicate calls before its first `await`.
+- Use the global [src/styles/button-loading.css](src/styles/button-loading.css), already imported in [src/main.ts](src/main.ts). `button[aria-busy="true"]` automatically gets seamless looping diagonal stripes, full opacity, and a progress cursor. Keep the button's normal shape, colors, and readable label; a short label such as “Saving…” is optional. Reuse this style rather than adding a separate spinner or a custom loading animation.
+- Set pending immediately when the operation starts and clear it on success or failure in `finally`. If a command only starts background work, keep pending until the completion or failure event for that operation arrives.
+- Track the initiating action and item separately: only its button shows stripes. Other buttons may be disabled when they conflict with the operation, without appearing busy. A button disabled because an action is unavailable is not busy.
+- Reduced motion, from either the system or Player's setting, leaves the stripes static. Use the existing global styles; do not override this behavior locally.
+- File selectors use `input[aria-busy="true"]::file-selector-button` for the same feedback. For confirmation dialogs, pass `:save-busy="pending"` to [ResponsivePopup](src/components/ResponsivePopup.vue); it also disables the Save button. Declarative plugin buttons receive their pending state from the host, without plugin-specific loading markup.
+- Images use [ImageLoader](src/components/ImageLoader.vue), which shares the same `.loading-stripes` pattern. CoverImage and PluginImage show it until the image loads, remove it on failure, and reset it when the source changes. Keep the image box dimensions stable and render interactive overlays above the loader.
+
+Typical Vue usage (the operation and error display belong to the feature):
+
+```vue
+<script setup lang="ts">
+import { ref } from 'vue';
+
+const pending = ref(false);
+const error = ref('');
+async function save() {
+  if (pending.value) return;
+  pending.value = true;
+  error.value = '';
+  try { await persistSettings(); }
+  catch (cause) { error.value = String(cause); }
+  finally { pending.value = false; }
+}
+</script>
+
+<template>
+  <button :aria-busy="pending" :disabled="pending" @click="save">Save</button>
+  <p v-if="error" role="alert">{{ error }}</p>
+</template>
+```
+
+### 5.11 Settings subtabs
+
+Declare nested settings entries in SETTINGS_SUBSECTIONS in [settings.ts](src/types/settings.ts). Render them directly below their parent in the settings navigation list, without extra horizontal indentation and with their own selected state, only while the parent or one of its children is open. Parents with children show a small chevron in the bottom corner of their icon, rotating with the expanded state. Animate subsection expansion/collapse with a short height and opacity transition; respect reduced motion for both animations. Add plugins is a child of Plugins and opens catalog search and manual installation. The same navigation hierarchy is available on mobile.
+
+### 5.12 Reusable segmented progress
 
 [SegmentedProgressBar](src/components/SegmentedProgressBar.vue) is the shared progress component for sequential batches of equal-sized work items. Use it when completed items should remain solid while the current item shows moving diagonal stripes. It has no knowledge of tracks, AcoustID, requests, or stage names; the caller owns the workflow and supplies:
 
@@ -595,13 +646,12 @@ This subsystem is intentionally asynchronous and event-driven because identifica
 
 ### 11.1 Soulseek
 
-[src-tauri/src/soulseek.rs](src-tauri/src/soulseek.rs) wraps the vendored soulseek-rs client, logging in with the credentials from device settings:
-
-- Search returns audio files, each with a cover file from the same remote folder when there is one.
-- Preview downloads into `.soulseek-preview-cache` and starts playback while the file is still growing. A finished preview can be promoted into the library.
-- Download saves into the library as `Artist/Album/filename` (or less, when tags are missing), along with the folder's cover as a sidecar, and indexes it.
-- Track replacement (the `track-replace` view) uses search and download to swap a track's file through `replace_track_with_file`, keeping its metadata, likes, and history.
-- Progress is reported through `soulseek-download` and `soulseek-preview` events.
+Soulseek is an independently built native package in player-plugins/soulseek. Its
+protocol client and network workers are not linked into Player. The generic plugin
+host supplies scoped settings/secrets, staging paths, media source tokens, library
+imports and replacements. Native UI contributes search, previews and track actions.
+Desktop uses installable libraries; Android uses a separately installed APK.
+See [Soulseek plugin documentation](https://github.com/NoName-Audio/player-plugins/blob/main/soulseek/README.md).
 
 ### 11.2 Import, duplicates, about, demo mode
 

@@ -2,7 +2,7 @@
 import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import type { AudioDevice } from '../types';
-import { SETTINGS_SECTIONS, type DeviceSettings, type SettingsSection } from '../types/settings';
+import { SETTINGS_SECTIONS, SETTINGS_SUBSECTIONS, type DeviceSettings, type SettingsSection, type SettingsSubsection } from '../types/settings';
 import { useAppearance } from '../composables/useAppearance';
 import { formatSampleRate } from '../utils/format';
 import SettingsToggle from './SettingsToggle.vue';
@@ -16,6 +16,13 @@ import CustomColorSwatch from './CustomColorSwatch.vue';
 import SegmentedControl from './SegmentedControl.vue';
 import SwatchPicker from './SwatchPicker.vue';
 import WebGLAlbumRenderer from './WebGLAlbumRenderer.vue';
+import { usePluginHost } from '../plugins/host';
+import PluginManager from '../plugins/components/PluginManager.vue';
+import PluginInstaller from '../plugins/components/PluginInstaller.vue';
+import PluginPanel from '../plugins/components/PluginPanel.vue';
+import PluginImage from '../plugins/components/PluginImage.vue';
+import type { PluginManifest } from '../plugins/types';
+import type { AppIconName } from '../icons';
 
 const props = defineProps<{
   section: SettingsSection | null;
@@ -44,11 +51,6 @@ const props = defineProps<{
   syncActive: boolean;
   peersCount: number;
   updateAvailable: boolean;
-  discordEnabled: boolean;
-  discordAvailable: boolean;
-  discordConfigured: boolean;
-  discordReady: boolean;
-  discordError: string;
   coverUrl: string | null;
   coverColors: [string, string];
 }>();
@@ -64,14 +66,20 @@ const emit = defineEmits<{
   selectOutput: [name: string];
   selectSampleRate: [sampleRate: number | null];
   toggleSync: [];
-  toggleDiscord: [enabled: boolean];
   deviceSaved: [settings: DeviceSettings];
-  soulseekSaved: [];
 }>();
 
 const selected = computed(() => props.section ?? 'library');
-const sections = computed(() => SETTINGS_SECTIONS.filter((item) => item.id !== 'discord' || (props.discordReady && props.discordAvailable)));
-const sectionInfo = computed(() => SETTINGS_SECTIONS.find((section) => section.id === selected.value)!);
+const pluginHost = usePluginHost();
+const pluginSettings = pluginHost.contributions('settings');
+interface SettingsNavItem { id: SettingsSection; label: string; description: string; icon: AppIconName; manifest?: PluginManifest; children?: readonly SettingsSubsection[] }
+const sections = computed<SettingsNavItem[]>(() => [...SETTINGS_SECTIONS.map(section => ({ ...section, children: SETTINGS_SUBSECTIONS[section.id] })), ...pluginSettings.value.map(c => ({
+  id: `plugin:${c.key}` as SettingsSection, label: c.label, description: c.description, icon: 'settings' as const,
+  manifest: pluginHost.plugins.value.find(plugin => plugin.manifest.id === c.pluginId)?.manifest,
+}))]);
+const sectionInfo = computed(() => sections.value.flatMap(section => [section, ...(section.children ?? [])]).find(section => section.id === selected.value) ?? { label: 'Settings' });
+const activeSubsectionGroup = computed(() => sections.value.find(item => item.children?.length && (selected.value === item.id || item.children.some(child => child.id === selected.value))));
+const activePluginSettings = computed(() => pluginSettings.value.find(c => selected.value === `plugin:${c.key}`));
 const panel = ref<HTMLElement | null>(null);
 watch(() => props.section, async () => { await nextTick(); panel.value?.focus({ preventScroll: true }); });
 const currentOutput = computed(() => props.outputDevices.find((device) => device.name === props.currentDevice));
@@ -86,19 +94,11 @@ const configLoading = ref(false);
 const configError = ref('');
 const deviceName = ref('');
 const emoji = ref('🎵');
-const username = ref('');
-const password = ref('');
-const showPassword = ref(false);
 const identitySaving = ref(false);
 const identityError = ref('');
 const identitySaved = ref(false);
-const soulseekSaving = ref(false);
-const soulseekError = ref('');
-const soulseekSaved = ref(false);
 const emojiOptions = ['🎵', '🎶', '🎤', '🎧', '🎼', '🎹', '🎸', '🥁', '📱', '💻', '🖥️', '⌚', '📻', '📡', '🔊', '🎺', '🎻', '🪕', '🎷', '🍕'];
 const identityDirty = computed(() => !!config.value && (deviceName.value !== config.value.device_name || emoji.value !== config.value.emoji));
-const soulseekDirty = computed(() => !!config.value && (username.value !== config.value.soulseek_username || password.value !== config.value.soulseek_password));
-const soulseekEnabled = computed(() => config.value?.soulseek_enabled ?? false);
 const { preferences, reducedMotion, systemReducedMotion, storageError, setPreference } = useAppearance();
 const { preferences: themePreferences, theme, storageError: themeStorageError, setThemePreference } = useTheme();
 const NO_GRADIENT_SWATCH = 'linear-gradient(135deg, transparent 46%, var(--color-text-faint) 46% 54%, transparent 54%), var(--color-bg-elevated)';
@@ -119,7 +119,6 @@ async function loadConfig() {
   try {
     config.value = await invoke<DeviceSettings>('get_device_settings');
     resetIdentity();
-    resetSoulseek();
   } catch {
     configError.value = 'Could not load device settings. Please try again.';
   } finally {
@@ -132,23 +131,12 @@ function resetIdentity() {
   identityError.value = '';
   identitySaved.value = false;
 }
-function resetSoulseek() {
-  username.value = config.value?.soulseek_username ?? '';
-  password.value = config.value?.soulseek_password ?? '';
-  showPassword.value = false;
-  soulseekError.value = '';
-  soulseekSaved.value = false;
-}
 async function persistConfig(next: DeviceSettings) {
-  await invoke('set_device_settings', {
-    emoji: next.emoji, deviceName: next.device_name,
-    soulseekEnabled: next.soulseek_enabled,
-    soulseekUsername: next.soulseek_username, soulseekPassword: next.soulseek_password,
-  });
+  await invoke('set_device_settings', { emoji: next.emoji, deviceName: next.device_name });
   config.value = next;
 }
 async function saveIdentity() {
-  if (identitySaving.value || soulseekSaving.value) return;
+  if (identitySaving.value) return;
   identitySaving.value = true;
   identityError.value = '';
   identitySaved.value = false;
@@ -163,48 +151,38 @@ async function saveIdentity() {
     identityError.value = 'Could not save device identity. Your changes are still here.';
   } finally { identitySaving.value = false; }
 }
-async function saveSoulseek() {
-  if (soulseekSaving.value || identitySaving.value) return;
-  soulseekSaving.value = true;
-  soulseekError.value = '';
-  soulseekSaved.value = false;
-  try {
-    const latest = await invoke<DeviceSettings>('get_device_settings');
-    await persistConfig({ ...latest, soulseek_username: username.value.trim(), soulseek_password: password.value });
-    username.value = config.value!.soulseek_username;
-    showPassword.value = false;
-    soulseekSaved.value = true;
-    emit('soulseekSaved');
-  } catch {
-    soulseekError.value = 'Could not save Soulseek credentials. Please try again.';
-  } finally { soulseekSaving.value = false; }
-}
-async function toggleSoulseek(enabled: boolean) {
-  if (soulseekSaving.value || identitySaving.value) return;
-  soulseekSaving.value = true;
-  soulseekError.value = '';
-  soulseekSaved.value = false;
-  try {
-    const latest = await invoke<DeviceSettings>('get_device_settings');
-    await persistConfig({ ...latest, soulseek_enabled: enabled });
-    emit('soulseekSaved');
-  } catch { soulseekError.value = 'Could not change Soulseek search. Please try again.'; }
-  finally { soulseekSaving.value = false; }
-}
 onMounted(() => { void loadConfig(); });
 </script>
 
 <template>
-  <section class="settings-page" :class="{ 'has-section': section !== null }">
-    <button v-if="section" class="mobile-back" @click="emit('navigate', null)"><AppIcon name="back" :size="18" /> Settings</button>
+  <section class="settings-page" :class="{ 'has-section': section !== null, 'has-subsections': section !== null && Boolean(activeSubsectionGroup) }">
     <div class="settings-layout">
       <nav class="settings-nav" aria-label="Settings sections">
-        <button v-for="item in sections" :key="item.id" :class="{ selected: selected === item.id }" :aria-current="section === item.id ? 'page' : undefined" @click="emit('navigate', item.id)">
-          <AppIcon :name="item.icon" />
-          <span class="nav-copy"><span class="nav-label">{{ item.label }}</span><span class="nav-description">{{ item.description }}</span></span>
-          <span v-if="item.id === 'about' && updateAvailable" class="update-dot" aria-label="Update available" />
-          <AppIcon class="nav-chevron" name="disclosure" :size="20" />
-        </button>
+        <template v-for="(item, index) in sections" :key="item.id">
+          <hr v-if="index === SETTINGS_SECTIONS.length" class="settings-nav-divider" aria-label="Plugin settings" />
+          <button :class="{ selected: selected === item.id, 'active-settings-group': activeSubsectionGroup?.id === item.id }" :aria-current="section === item.id ? 'page' : undefined"
+            :aria-expanded="item.children?.length ? activeSubsectionGroup?.id === item.id : undefined" :aria-controls="item.children?.length ? `settings-subsections-${item.id}` : undefined" @click="emit('navigate', item.id)">
+            <span class="settings-nav-icon-wrap">
+              <PluginImage v-if="item.manifest" :manifest="item.manifest" monochrome />
+              <AppIcon v-else class="settings-nav-icon" :name="item.icon" />
+              <AppIcon v-if="item.children?.length" class="settings-subsections-arrow" name="disclosure" :size="10" />
+            </span>
+            <span class="nav-copy"><span class="nav-label">{{ item.label }}</span><span class="nav-description">{{ item.description }}</span></span>
+            <span v-if="item.id === 'about' && updateAvailable" class="update-dot" aria-label="Update available" />
+            <AppIcon class="nav-chevron" name="disclosure" :size="20" />
+          </button>
+          <Transition name="settings-subsections">
+            <div v-if="activeSubsectionGroup?.id === item.id" :id="`settings-subsections-${item.id}`" class="settings-subsections active-settings-group">
+              <div class="settings-subsections-inner">
+                <button v-for="child in item.children" :key="child.id" class="settings-subnav active-settings-group" :class="{ selected: selected === child.id }"
+                  :aria-current="section === child.id ? 'page' : undefined" @click="emit('navigate', child.id)">
+                  <span class="nav-copy"><span class="nav-label">{{ child.label }}</span><span class="nav-description">{{ child.description }}</span></span>
+                  <AppIcon class="nav-chevron" name="disclosure" :size="20" />
+                </button>
+              </div>
+            </div>
+          </Transition>
+        </template>
         <p class="local-note">Preferences stay on this device.</p>
       </nav>
       <div ref="panel" class="settings-panel" role="region" :aria-label="sectionInfo.label" tabindex="-1">
@@ -212,16 +190,16 @@ onMounted(() => { void loadConfig(); });
           <div class="settings-group">
             <h3>Music folder</h3>
             <p>Your files are the source of your library.</p>
-            <div class="folder-card"><AppIcon name="folder" /><span>{{ dataDir || 'Music folder unavailable' }}</span><button class="icon-label" @click="emit('openFolder')">{{ dataDir ? 'Open folder' : 'Try again' }}<AppIcon v-if="dataDir" name="external-link" /></button></div>
+            <div class="folder-card"><AppIcon name="folder" /><span>{{ dataDir || 'Music folder unavailable' }}</span><button class="control-button icon-label" @click="emit('openFolder')">{{ dataDir ? 'Open folder' : 'Try again' }}<AppIcon v-if="dataDir" name="external-link" /></button></div>
           </div>
           <div class="settings-group">
             <h3>Library maintenance</h3>
             <div class="setting-row"><div><h4>Show duplicates</h4><p>Include tracks marked as duplicates in your library and playlists.</p></div><SettingsToggle :model-value="showDuplicateTracks" label="Show duplicates" @update:model-value="emit('update:showDuplicateTracks', $event)" /></div>
-            <div class="setting-row"><div><h4>Reindex library</h4><p>Scan your music folder for new or changed files.</p></div><button :disabled="indexBusy" @click="emit('reindex')">{{ indexBusy ? 'Scanning...' : 'Reindex' }}</button></div>
+            <div class="setting-row"><div><h4>Reindex library</h4><p>Scan your music folder for new or changed files.</p></div><button class="control-button" :aria-busy="indexBusy" :disabled="indexBusy" @click="emit('reindex')">{{ indexBusy ? 'Scanning...' : 'Reindex' }}</button></div>
             <div v-if="indexBusy" class="scan-progress" role="status"><progress :value="indexTotal ? indexCurrent : undefined" :max="indexTotal || 1" aria-label="Library scanning progress" /><p>{{ indexTotal ? `${indexCurrent} of ${indexTotal} files scanned` : 'Looking for music files...' }}</p></div>
             <p v-else-if="indexDone" class="success" role="status">Scan complete. {{ indexAdded }} files added or updated.</p>
-            <div class="setting-row"><div><h4>Duplicates</h4><p>Review matching tracks and choose which ones to keep visible.</p></div><button @click="emit('duplicates')">Review duplicates</button></div>
-            <div class="setting-row"><div><h4>Identify tracks</h4><p>Look up missing metadata using audio fingerprints. Requires an internet connection.</p></div><button :disabled="identifyBusy" @click="emit('identify')">{{ identifyBusy ? 'Identifying...' : 'Identify tracks' }}</button></div>
+            <div class="setting-row"><div><h4>Duplicates</h4><p>Review matching tracks and choose which ones to keep visible.</p></div><button class="control-button" @click="emit('duplicates')">Review duplicates</button></div>
+            <div class="setting-row"><div><h4>Identify tracks</h4><p>Look up missing metadata using audio fingerprints. Requires an internet connection.</p></div><button class="control-button" :aria-busy="identifyBusy" :disabled="identifyBusy" @click="emit('identify')">{{ identifyBusy ? 'Identifying...' : 'Identify tracks' }}</button></div>
             <p v-if="actionError" class="error" role="alert">{{ actionError }}</p><p v-if="actionMessage" class="help" role="status">{{ actionMessage }}</p>
           </div>
         </template>
@@ -229,8 +207,8 @@ onMounted(() => { void loadConfig(); });
         <template v-else-if="selected === 'playback'">
           <div v-if="remoteOutputLabel" class="notice"><strong>Playing on {{ remoteOutputLabel }}</strong><p>Choosing a local output transfers playback to this device.</p></div>
           <div class="settings-group">
-            <div class="setting-row"><div><h3>Audio output</h3><p>Choose where Player sends audio on this device.</p></div><button :disabled="audioLoading || audioBusy" @click="emit('refreshAudio')">{{ audioLoading ? 'Refreshing...' : 'Refresh' }}</button></div>
-            <label class="field">
+            <div class="setting-row"><div><h3>Audio output</h3><p>Choose where Player sends audio on this device.</p></div><button class="control-button" :aria-busy="audioLoading" :disabled="audioLoading || audioBusy" @click="emit('refreshAudio')">{{ audioLoading ? 'Refreshing...' : 'Refresh' }}</button></div>
+            <label class="field form-field">
               <span>Output device</span>
               <AppSelect :model-value="selectedDevice ?? ''" :disabled="audioLoading || audioBusy" @update:model-value="emit('selectOutput', $event)">
                 <option value="">System default</option>
@@ -238,7 +216,7 @@ onMounted(() => { void loadConfig(); });
                 <option v-for="device in outputDevices" :key="device.name" :value="device.name">{{ device.name }}</option>
               </AppSelect>
             </label>
-            <label class="field">
+            <label class="field form-field">
               <span>Sample rate</span>
               <AppSelect :model-value="currentSampleRate ?? null" :disabled="audioLoading || audioBusy || !outputDevices.length" @update:model-value="emit('selectSampleRate', $event)">
                 <option :value="null">Auto</option>
@@ -252,45 +230,35 @@ onMounted(() => { void loadConfig(); });
           </div>
         </template>
 
-        <template v-else-if="selected === 'discord'">
-          <p v-if="!discordReady" role="status">Loading Discord settings...</p>
-          <p v-else-if="!discordAvailable">Discord Rich Presence is not available in this build.</p>
-          <div v-else class="settings-group">
-            <div class="setting-row"><div><h4>Discord Rich Presence</h4><p>Show the track and artist you are listening to on your Discord profile.</p></div><SettingsToggle :model-value="discordEnabled" label="Discord Rich Presence" :disabled="!discordConfigured" @update:model-value="emit('toggleDiscord', $event)" /></div>
-            <p class="help">{{ discordConfigured ? 'Requires the Discord desktop app. Your activity is hidden while paused.' : 'Discord integration is not configured in this build.' }}</p>
-            <p v-if="discordError" class="error" role="alert">{{ discordError }}</p>
-          </div>
-        </template>
-
-        <template v-else-if="selected === 'devices' || selected === 'soulseek'">
+        <template v-else-if="selected === 'devices'">
           <p v-if="configLoading" role="status">Loading device settings...</p>
-          <div v-else-if="configError" class="notice"><p class="error" role="alert">{{ configError }}</p><button @click="loadConfig">Try again</button></div>
+          <div v-else-if="configError" class="notice"><p class="error" role="alert">{{ configError }}</p><button class="control-button" @click="loadConfig">Try again</button></div>
           <template v-else-if="config">
-            <template v-if="selected === 'devices'">
+
               <form class="settings-group" @submit.prevent="saveIdentity">
                 <h3>Device identity</h3><p>This is how this Player appears to other devices.</p>
                 <div class="device-preview"><span class="device-emoji">{{ emoji }}</span><div><strong>{{ deviceName.trim() || 'My Player' }}</strong><p>This device</p></div></div>
-                <label class="field"><span>Device name</span><input v-model="deviceName" placeholder="My Player" autocomplete="off" maxlength="100" :disabled="identitySaving" /></label>
-                <fieldset :disabled="identitySaving"><legend>Device emoji</legend><div class="emoji-picker"><button v-for="item in emojiOptions" :key="item" type="button" :class="{ chosen: emoji === item }" :aria-pressed="emoji === item" :aria-label="`Use ${item} as device emoji`" @click="emoji = item">{{ item }}</button></div></fieldset>
+                <label class="field form-field"><span>Device name</span><input v-model="deviceName" class="form-input" placeholder="My Player" autocomplete="off" maxlength="100" :disabled="identitySaving" /></label>
+                <fieldset :disabled="identitySaving"><legend>Device emoji</legend><div class="emoji-picker"><button class="control-button" v-for="item in emojiOptions" :key="item" type="button" :class="{ chosen: emoji === item }" :aria-pressed="emoji === item" :aria-label="`Use ${item} as device emoji`" @click="emoji = item">{{ item }}</button></div></fieldset>
                 <p v-if="identityError" class="error" role="alert">{{ identityError }}</p><p v-if="identitySaved && !identityDirty" class="success" role="status">Device identity saved.</p>
-                <div class="form-actions"><button type="button" :disabled="!identityDirty || identitySaving" @click="resetIdentity">Cancel</button><button class="primary" :disabled="!identityDirty || identitySaving || soulseekSaving" type="submit">{{ identitySaving ? 'Saving...' : 'Save' }}</button></div>
+                <div class="form-actions"><button class="control-button" type="button" :disabled="!identityDirty || identitySaving" @click="resetIdentity">Cancel</button><button class="control-button control-button-primary" :aria-busy="identitySaving" :disabled="!identityDirty || identitySaving" type="submit">{{ identitySaving ? 'Saving...' : 'Save' }}</button></div>
               </form>
-              <div class="settings-group"><h3>Local network</h3><div class="setting-row"><div><h4>LAN sync</h4><p>Sync music, playlists and listening history with Players on the same network.</p></div><SettingsToggle :model-value="syncEnabled" label="LAN sync" :disabled="syncBusy" @update:model-value="emit('toggleSync')" /></div><p v-if="syncError" class="error" role="alert">{{ syncError }}</p><div class="setting-row"><div><h4>{{ syncActive ? 'Sync in progress' : syncEnabled ? 'Sync is on' : 'Sync is off' }}</h4><p>{{ peersCount }} {{ peersCount === 1 ? 'device' : 'devices' }} found on your network.</p></div><button class="icon-label" @click="emit('devices')">Open devices <AppIcon name="go" /></button></div></div>
-            </template>
-            <template v-else>
-              <div class="settings-group"><div class="setting-row"><div><h3>Soulseek search</h3><p>Search the Soulseek network and download music into your library.</p></div><SettingsToggle :model-value="soulseekEnabled" label="Soulseek search" :disabled="soulseekSaving || identitySaving" @update:model-value="toggleSoulseek" /></div></div>
-              <form v-if="soulseekEnabled" class="settings-group" @submit.prevent="saveSoulseek">
-                <h3>Connection</h3><p>Use your Soulseek account to search the network.</p>
-                <label class="field"><span>Username</span><input v-model="username" autocomplete="username" spellcheck="false" :disabled="soulseekSaving" /></label>
-                <label class="field"><span>Password</span><span class="password-field"><input v-model="password" :type="showPassword ? 'text' : 'password'" autocomplete="current-password" :disabled="soulseekSaving" /><button type="button" :aria-pressed="showPassword" @click="showPassword = !showPassword">{{ showPassword ? 'Hide' : 'Show' }}</button></span></label>
-                <p v-if="soulseekSaved && !soulseekDirty" class="success" role="status">Soulseek credentials saved.</p>
-                <div class="form-actions"><button type="button" :disabled="!soulseekDirty || soulseekSaving" @click="resetSoulseek">Cancel</button><button class="primary" type="submit" :disabled="!soulseekDirty || soulseekSaving || identitySaving || !username.trim() || !password">{{ soulseekSaving ? 'Saving...' : 'Save' }}</button></div>
-              </form>
-              <p v-if="soulseekError" class="error" role="alert">{{ soulseekError }}</p><p v-if="actionError" class="error" role="alert">{{ actionError }}</p>
-              <div class="settings-group"><h3>Downloads</h3><p>Downloaded files are saved in the Soulseek folder inside your music library.</p><div class="folder-card"><span>{{ dataDir ? `${dataDir.replace(/[\\/]$/, '')}/Soulseek` : 'Loading folder...' }}</span><button class="icon-label" :disabled="!dataDir" @click="emit('openFolder')">Open music folder <AppIcon name="external-link" /></button></div></div>
-            </template>
+              <div class="settings-group"><h3>Local network</h3><div class="setting-row"><div><h4>LAN sync</h4><p>Sync music, playlists and listening history with Players on the same network.</p></div><SettingsToggle :model-value="syncEnabled" label="LAN sync" :aria-busy="syncBusy" :disabled="syncBusy" @update:model-value="emit('toggleSync')" /></div><p v-if="syncError" class="error" role="alert">{{ syncError }}</p><div class="setting-row"><div><h4>{{ syncActive ? 'Sync in progress' : syncEnabled ? 'Sync is on' : 'Sync is off' }}</h4><p>{{ peersCount }} {{ peersCount === 1 ? 'device' : 'devices' }} found on your network.</p></div><button class="control-button icon-label" @click="emit('devices')">Open devices <AppIcon name="go" /></button></div></div>
           </template>
         </template>
+
+        <div v-else-if="selected === 'plugins'" class="settings-group">
+          <div class="settings-section-heading">
+            <h3>Plugins</h3>
+            <button type="button" class="control-button control-button-primary" @click="emit('navigate', 'plugins/add')">Add plugins</button>
+          </div>
+          <PluginManager @settings="emit('navigate', `plugin:${$event}`)" />
+        </div>
+        <div v-else-if="selected === 'plugins/add'" class="settings-group">
+          <h3>Add plugins</h3>
+          <PluginInstaller @done="emit('navigate', 'plugins')" />
+        </div>
+        <PluginPanel v-else-if="activePluginSettings" :key="activePluginSettings.key" :plugin-id="activePluginSettings.pluginId" :view-id="activePluginSettings.id" />
 
         <template v-else-if="selected === 'appearance'">
           <div class="appearance-preview" :class="{ 'preview-flat': !preferences.album3d || reducedMotion }" aria-label="Appearance preview">
@@ -321,10 +289,25 @@ onMounted(() => { void loadConfig(); });
 p { color: var(--color-text-muted); font-size: 13px; line-height: 1.65; margin: 0; }
 .settings-layout { display: grid; grid-template-columns: 184px minmax(0, 1fr); gap: 44px; align-items: start; }
 .settings-nav { display: flex; flex-direction: column; gap: 4px; position: sticky; top: var(--settings-page-top); }
-.settings-nav > button { display: flex; align-items: center; gap: 12px; padding: 13px 12px; border: 0; border-radius: 6px; color: var(--color-text-muted); background: transparent; font-size: 13px; font-weight: 600; text-align: left; cursor: pointer; }
-.settings-nav > button:where(:hover, :active) { background: color-mix(in srgb, var(--color-text) 6%, transparent); color: var(--color-text); }
-.settings-nav > button.selected { background: color-mix(in srgb, var(--color-accent) 12%, var(--color-card)); color: var(--color-accent-text); }
+.settings-nav-divider { border: 0; border-top: 1px solid var(--color-border); margin: 8px 12px; }
+.settings-nav button { display: flex; align-items: center; gap: 12px; padding: 13px 12px; border: 0; border-radius: 6px; color: var(--color-text-muted); background: transparent; font-size: 13px; font-weight: 600; text-align: left; cursor: pointer; }
+.settings-nav button:where(:hover, :active) { background: color-mix(in srgb, var(--color-text) 6%, transparent); color: var(--color-text); }
+.settings-nav button.selected { background: color-mix(in srgb, var(--color-accent) 12%, var(--color-card)); color: var(--color-accent-text); }
+/* Match the parent's padding + icon width + gap, keeping the button full width. */
+.settings-nav button.settings-subnav { padding: 9px 12px; padding-inline-start: calc(12px + 19px + 12px); border-radius: 6px; font-size: 12px; }
 .settings-nav svg { width: 19px; height: 19px; flex-shrink: 0; }
+.settings-nav-icon-wrap { position: relative; display: grid; place-items: center; width: var(--plugin-icon-size, 19px); height: var(--plugin-icon-size, 19px); flex: 0 0 var(--plugin-icon-size, 19px); }
+.settings-nav .settings-subsections-arrow { position: absolute; right: -5px; bottom: -4px; width: 10px; height: 10px; color: var(--color-accent-text); transform: rotate(45deg); transition: transform 180ms ease; }
+.settings-nav button[aria-expanded="true"] .settings-subsections-arrow { transform: rotate(90deg); }
+.settings-subsections { display: grid; grid-template-rows: 1fr; opacity: 1; margin-block-start: 0; }
+.settings-subsections-inner { display: flex; flex-direction: column; gap: 4px; min-height: 0; overflow: hidden; }
+.settings-subsections-enter-active, .settings-subsections-leave-active { transition: grid-template-rows 180ms ease, opacity 140ms ease, margin-block-start 180ms ease; }
+.settings-subsections-enter-from, .settings-subsections-leave-to { grid-template-rows: 0fr; opacity: 0; margin-block-start: -4px; }
+.settings-subsections-leave-active { pointer-events: none; }
+@media (prefers-reduced-motion: reduce) {
+  .settings-subsections-enter-active, .settings-subsections-leave-active, .settings-nav .settings-subsections-arrow { transition: none; }
+}
+.settings-nav-icon { color: var(--color-accent-text); }
 .nav-copy { flex: 1; }
 .nav-description, .nav-chevron { display: none; }
 .local-note { font-size: 11px; padding: 20px 12px 0; }
@@ -334,24 +317,18 @@ p { color: var(--color-text-muted); font-size: 13px; line-height: 1.65; margin: 
 h3 { font-size: 15px; margin: 0 0 7px; font-weight: 700; }
 h4 { font-size: 14px; margin: 0 0 5px; font-weight: 500; }
 .settings-group { margin-bottom: 32px; }
+.settings-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
+.settings-section-heading h3 { margin: 0; }
 .setting-row { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 21px 0; border-bottom: 1px solid var(--color-border); }
 .setting-row > div { min-width: 0; }
 .setting-row p { max-width: 390px; }
-button, input { font: inherit; }
-.settings-panel button:where(:not(.settings-switch)), .mobile-back { border: 1px solid var(--color-border-strong); background: transparent; color: var(--color-text); border-radius: 99px; padding: 9px 16px; font-size: 12px; font-weight: 600; cursor: pointer; flex-shrink: 0; }
 .settings-panel .icon-label { display: inline-flex; align-items: center; gap: 6px; }
-.settings-panel button:where(:not(.settings-switch):enabled):is(:hover, :active) { background: color-mix(in srgb, var(--color-text) 6%, transparent); border-color: var(--color-text-faint); }
-.settings-panel button:not(.settings-switch):disabled { opacity: .45; cursor: default; }
 button:focus-visible, input:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 3px; }
 .settings-panel :deep(.settings-switch) { padding: 3px; border-radius: 99px; }
-.settings-panel .primary { background: var(--color-accent); border-color: var(--color-accent); color: var(--color-on-accent); padding-inline: 24px; }
-.settings-panel .primary:enabled:is(:hover, :active) { background: var(--color-accent-hover); border-color: var(--color-accent-hover); }
 .folder-card { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; margin-top: 18px; padding: 18px; border-radius: 8px; }
 .folder-card svg { width: 24px; height: 24px; color: var(--color-text-muted); flex-shrink: 0; }
 .folder-card > span { flex: 1; min-width: 120px; overflow-wrap: anywhere; font-size: 13px; color: var(--color-text); }
-.field { display: flex; flex-direction: column; gap: 9px; margin-top: 22px; font-size: 13px; font-weight: 600; }
-.field input { border: 1px solid var(--color-border-strong); background: transparent; color: var(--color-text); border-radius: 5px; padding: 12px; width: 100%; min-height: 44px; font-size: 14px; }
-.field input:disabled { opacity: .5; }
+.field { margin-top: 22px; }
 .field .app-select { min-height: 44px; }
 .help { font-size: 12px; margin-top: 12px; }
 .notice { border-radius: 8px; padding: 16px; margin-bottom: 24px; }
@@ -404,7 +381,6 @@ legend { font-size: 13px; font-weight: 600; margin-bottom: 12px; }
 .preview-art { position: relative; justify-self: start; width: 100%; max-width: 208px; aspect-ratio: 1; }
 .preview-art :deep(.webgl-album-renderer) { top: 0; }
 .flat-art { position: absolute; inset: 16%; border-radius: 4px; background-size: cover; background-position: center; }
-.mobile-back { display: none; }
 @media (max-width: 1080px) { .settings-layout { grid-template-columns: 160px minmax(0, 1fr); gap: 24px; } .setting-row { gap: 16px; } .appearance-preview { gap: 16px; padding: 16px 0; } }
 @container appearance-preview (max-width: 360px) {
   .preview-track :deep(.track-num), .preview-track :deep(.track-dur) { display: none; }
@@ -414,17 +390,24 @@ legend { font-size: 13px; font-weight: 600; margin-bottom: 12px; }
   .appearance-preview { grid-template-columns: minmax(0, 1fr); }
   .settings-layout { display: block; }
   .settings-nav { position: static; gap: 0; }
-  .settings-nav > button { padding: 18px 4px; border-bottom: 1px solid var(--color-border); border-radius: 0; gap: 16px; min-height: 76px; }
-  .settings-nav > button.selected { background: transparent; color: var(--color-text-muted); }
+  .settings-nav-divider { margin: 12px 4px; }
+  .settings-nav button { padding: 18px 4px; border-bottom: 1px solid var(--color-border); border-radius: 0; gap: 16px; min-height: 76px; }
+  .settings-nav button.selected { background: transparent; color: var(--color-text-muted); }
+  .settings-nav button.settings-subnav { padding: 12px; padding-inline-start: calc(4px + 22px + 16px); min-height: 52px; }
   .settings-nav svg { width: 22px; height: 22px; }
+  .settings-nav { --plugin-icon-size: 22px; }
+  .settings-subsections-inner { gap: 0; }
+  .settings-subsections-enter-from, .settings-subsections-leave-to { margin-block-start: 0; }
   .nav-label { color: var(--color-text); font-size: 15px; }
   .nav-description { display: block; color: var(--color-text-muted); font-size: 12px; font-weight: 400; margin-top: 6px; }
   .nav-chevron { display: block; color: var(--color-text-faint); }
   .local-note { padding: 24px 4px; }
   .settings-panel { display: none; }
   .has-section .settings-nav { display: none; }
+  .has-section.has-subsections .settings-nav { display: flex; margin-bottom: 20px; }
+  .has-section.has-subsections .settings-nav > :not(.active-settings-group) { display: none; }
+  .has-section.has-subsections .settings-nav button.active-settings-group { min-height: 44px; padding-block: 10px; }
   .has-section .settings-panel { display: block; }
-  .mobile-back { display: flex; gap: 10px; align-items: center; padding: 8px 0; margin-bottom: 10px; border: 0; border-radius: 3px; color: var(--color-text-muted); font-size: 14px; }
   .setting-row { align-items: flex-start; flex-wrap: wrap; gap: 14px; }
   .setting-row > div:first-child { flex: 1; min-width: 180px; }
   .setting-row :deep(.settings-switch) { margin-top: 2px; }
