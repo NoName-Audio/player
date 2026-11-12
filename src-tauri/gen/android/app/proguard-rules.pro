@@ -29,3 +29,7 @@
 -keep class dev.verncat.player.PluginSecretArgs { *; }
 
 -keep class dev.verncat.player.NativeHostBridge { *; }
+
+# Shared with independently shrunk plugin APKs through the parent class loader.
+# Preserve invoke as well as the type name: both are part of the callback ABI.
+-keep interface kotlin.jvm.functions.Function2 { *; }
