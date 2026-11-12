@@ -4,6 +4,12 @@ on:
   pull_request:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Published Player release tag containing the documentation generator'
+        required: true
+        type: string
   workflow_call:
     inputs:
       tag:
