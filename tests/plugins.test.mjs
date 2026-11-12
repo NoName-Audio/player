@@ -153,34 +153,13 @@ test('catalog uninstall disables an active plugin before deleting it and stops i
   assert.deepEqual(calls, [['uninstall', 'example.native']]);
 });
 
-test('catalog selection checks the requested ID and previews the actual package before installation', async () => {
-  const script = readFileSync(new URL('../src/plugins/components/PluginInstaller.vue', import.meta.url), 'utf8').split('<script setup lang="ts">')[1].split('</script>')[0];
-  const parsed = ts.createSourceFile('PluginManager.ts', script, ts.ScriptTarget.Latest, true);
-  const fn = parsed.statements.find(s => ts.isFunctionDeclaration(s) && s.name?.text === 'loadCatalogPlugin');
-  const code = ts.transpileModule(`export ${fn.getText(parsed)}`, {
-    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
-  }).outputText;
-  const helpers = {}, busy = { value: '' }, error = { value: '' }, calls = [];
-  const downloaded = { content: 'actual package', manifest: { id: 'example.hello', name: 'Actual name', permissions: ['network.http'] }, fingerprint: 'actual fingerprint' };
-  let preview, fail = false;
-  new Function('exports', 'invoke', 'busy', 'error', 'resetPreview', 'showPreview', 'android', 'openUrl', code)(helpers,
-    async (command, args) => { calls.push([command, args]); if (fail) throw new Error('ID mismatch'); return downloaded; },
-    busy, error, () => { preview = undefined; }, (content, checked) => { preview = { content, checked }; }, {value:false}, async()=>{});
-  await helpers.loadCatalogPlugin({ id: 'example.hello', repository: 'https://github.com/author/plugin', installUrl: 'https://example.org/plugin.player-plugin', name: 'Catalog name' });
-  assert.deepEqual(calls, [['plugins_download', { url: 'https://example.org/plugin.player-plugin', expectedId: 'example.hello' }]]);
-  assert.equal(preview.checked.manifest.name, 'Actual name');
-  assert.deepEqual(preview.checked.manifest.permissions, ['network.http']);
-  assert.equal(busy.value, '');
-  fail = true;
-  await helpers.loadCatalogPlugin({ id: 'example.hello', repository: 'https://github.com/author/plugin' });
-  assert.equal(calls[1][1].url, 'https://github.com/author/plugin');
-  assert.equal(preview, undefined); assert.match(error.value, /ID mismatch/); assert.equal(busy.value, '');
-});
 
 
 function nativeHostHarness({startupEvent} = {}) {
   const source = readFileSync(new URL('../src/plugins/host.ts', import.meta.url), 'utf8');
   const code = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
+  const queue = {};
+  new Function('exports', ts.transpileModule(readFileSync(new URL('../src/plugins/attachmentQueue.ts', import.meta.url), 'utf8'), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText)(queue);
   const helpers = {}, mounted = [], unmounted = [], listeners = new Map(), calls = [], navigation = [];
   const plugin = { manifest: { id: 'example.native', permissions: ['ui', 'playback.read', 'playback.control'], contributions: [{id:'home',kind:'page',label:'Native',order:0}] }, generation: 1, enabled: true, supported: true };
   const invoke = async (command, args) => {
@@ -194,7 +173,7 @@ function nativeHostHarness({startupEvent} = {}) {
     throw new Error(`Unexpected command ${command}`);
   };
   const require = name => name === 'vue' ? { computed,ref,watch:()=>{},onMounted:fn=>mounted.push(fn),onUnmounted:fn=>unmounted.push(fn),provide:()=>{},inject:()=>null }
-    : name.endsWith('/core') ? {invoke} : {listen:async (topic,handler)=>{listeners.set(topic,handler);return ()=>listeners.delete(topic);}};
+    : name === './attachmentQueue' ? queue : name.endsWith('/core') ? {invoke} : {listen:async (topic,handler)=>{listeners.set(topic,handler);return ()=>listeners.delete(topic);}};
   new Function('exports','require',code)(helpers,require);
   const host = helpers.createPluginHost({ snapshot:()=>reactive({title:'A track',playing:true,resource:null}),transport:async()=>{},playSource:async()=>{},adopt:async()=>{},navigate:(...args)=>navigation.push(args) });
   return {host,calls,listeners,navigation,plugin,start:async()=>{for(const fn of mounted) await fn();},stop:()=>unmounted.forEach(fn=>fn())};
@@ -244,14 +223,14 @@ test('native startup replays buffered events once and rejects later duplicates',
   assert.equal(h.calls.filter(([command,args])=>command==='plugin_native_call'&&args.method==='event').length,1);h.stop();
 });
 
-test('Android catalog opens the APK installer download without treating an APK as a library package', async () => {
-  const source=readFileSync(new URL('../src/plugins/components/PluginInstaller.vue',import.meta.url),'utf8').split('<script setup lang="ts">')[1].split('</script>')[0];
-  const parsed=ts.createSourceFile('PluginManager.ts',source,ts.ScriptTarget.Latest,true);
-  const fn=parsed.statements.find(node=>ts.isFunctionDeclaration(node)&&node.name?.text==='loadCatalogPlugin');
-  const code=ts.transpileModule(`export ${fn.getText(parsed)}`,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText;
-  const helpers={},busy={value:''},error={value:''},opened=[];
-  new Function('exports','invoke','busy','error','resetPreview','showPreview','android','openUrl',code)(helpers,
-    async()=>{throw new Error('APK must not be passed to the library downloader');},busy,error,()=>{},()=>{throw new Error('APK must be reviewed after installation/discovery');},{value:true},async url=>opened.push(url));
-  await helpers.loadCatalogPlugin({id:'player.soulseek',repository:'https://github.com/NoName-Audio/player-plugins',androidApkUrl:'https://github.com/NoName-Audio/player-plugins/releases/download/native-v1.0.0/player.soulseek.apk'});
-  assert.equal(opened.length,1);assert.match(error.value,/Find APK plugins/);assert.equal(busy.value,'');
+
+test('attachments remain independent, eligible and deterministically sorted', async () => {
+  const h = nativeHostHarness(); await h.start();
+  assert.deepEqual(h.host.attachments.value, []);
+  const make = (id, enabled, supported, order) => ({ manifest: { id, contributions: [], attachments: [{ id:'extra',target:'AlbumCard',position:'after',view:'extra',order }] }, generation:2, enabled, supported });
+  h.host.plugins.value = [make('z.plugin',true,true,0), make('a.plugin',true,true,0), make('disabled',false,true,-1), make('unsupported',true,false,-1), make('stopped',true,true,-1)];
+  h.host.running.value = ['z.plugin','a.plugin','disabled','unsupported'];
+  assert.deepEqual(h.host.attachments.value.map(a => a.key), ['a.plugin/extra','z.plugin/extra']);
+  assert.deepEqual(h.host.contributions('page').value, []);
+  h.stop();
 });

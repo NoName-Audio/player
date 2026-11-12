@@ -1,0 +1,104 @@
+name: Attachment documentation
+
+on:
+  pull_request:
+  release:
+    types: [published]
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+    secrets:
+      PLUGINS_DOCS_APP_PRIVATE_KEY:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  preview:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          submodules: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      - uses: pnpm/action-setup@v5
+        with:
+          version: 10
+      - name: Install generator dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Test documentation generator
+        run: node --test scripts/generate-attachment-docs.test.mjs
+      - name: Generate downloadable preview
+        run: node scripts/generate-attachment-docs.mjs --output attachment-targets.md
+      - uses: actions/upload-artifact@v7
+        with:
+          name: attachment-targets-preview
+          path: attachment-targets.md
+          if-no-files-found: error
+
+  publish:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: player-plugins-attachment-docs
+      cancel-in-progress: false
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.event.release.tag_name }}
+    steps:
+      - name: Validate GitHub App configuration
+        env:
+          APP_ID: ${{ vars.PLUGINS_DOCS_APP_ID }}
+          APP_KEY: ${{ secrets.PLUGINS_DOCS_APP_PRIVATE_KEY }}
+        run: |
+          if [ -z "$APP_ID" ] || [ -z "$APP_KEY" ]; then
+            echo '::error::Set repository variable PLUGINS_DOCS_APP_ID and secret PLUGINS_DOCS_APP_PRIVATE_KEY. Install the GitHub App on NoName-Audio/player-plugins with Contents: write and Pull requests: write. No source-repository write permission is needed.'
+            exit 1
+          fi
+      - name: Checkout exact published tag
+        uses: actions/checkout@v6
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
+          persist-credentials: false
+          submodules: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      - uses: pnpm/action-setup@v5
+        with:
+          version: 10
+      - name: Install generator dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Generate release documentation
+        run: node scripts/generate-attachment-docs.mjs --output "$RUNNER_TEMP/attachment-targets.md"
+      # The publisher is trusted workflow code, not code from the release tag.
+      - name: Checkout automation
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: automation
+          persist-credentials: false
+          submodules: false
+          sparse-checkout: .github/scripts
+      - name: Create narrowly scoped installation token
+        id: app
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.PLUGINS_DOCS_APP_ID }}
+          private-key: ${{ secrets.PLUGINS_DOCS_APP_PRIVATE_KEY }}
+          owner: NoName-Audio
+          repositories: player-plugins
+          permission-contents: write
+          permission-pull-requests: write
+      - name: Open or update release documentation PR
+        env:
+          API_TOKEN: ${{ github.token }}
+          PLUGINS_TOKEN: ${{ steps.app.outputs.token }}
+          DOCS_PATH: ${{ runner.temp }}/attachment-targets.md
+        run: node automation/.github/scripts/publish-attachment-docs.mjs

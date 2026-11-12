@@ -26,6 +26,8 @@
     "plugins:pack": "cargo run --manifest-path plugins/Cargo.toml -p player-plugin-sdk --bin player-plugin-pack --",
     "plugins:android:build": "./plugins/gradlew -p plugins/examples/android-native assembleDebug",
     "test:plugins": "node --test ./tests/plugins.test.mjs",
+    "attachments:docs": "node ./scripts/generate-attachment-docs.mjs",
+    "test:attachment-docs": "node --test ./scripts/generate-attachment-docs.test.mjs",
     "test:plugin-sdk": "cargo test --manifest-path plugins/Cargo.toml --workspace"
   },
   "dependencies": {

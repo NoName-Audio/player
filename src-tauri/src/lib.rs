@@ -201,6 +201,7 @@ pub fn run() {
             greet,
             plugins::plugins_list,
             plugins::android::plugins_android_discover,
+            plugins::android::plugins_android_install_catalog,
             plugins::plugins_diagnostics,
             plugins::plugins_preview,
             plugins::plugins_download,

@@ -135,6 +135,7 @@ impl Catalog {
                 platforms: entry.platforms.clone(),
                 permissions: vec![],
                 contributions: vec![],
+                attachments: vec![],
             }
             .validate()?;
         }

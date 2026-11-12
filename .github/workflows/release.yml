@@ -352,3 +352,14 @@ jobs:
           generate_release_notes: false
           body_path: ${{ steps.release_notes.outputs.notes_path }}
           files: release-artifacts/**/*
+
+  attachment-docs:
+    name: Propose plugin attachment documentation
+    needs: publish-release
+    permissions:
+      contents: read
+    uses: ./.github/workflows/attachment-docs.yml
+    with:
+      tag: ${{ inputs.tag || github.ref_name }}
+    secrets:
+      PLUGINS_DOCS_APP_PRIVATE_KEY: ${{ secrets.PLUGINS_DOCS_APP_PRIVATE_KEY }}

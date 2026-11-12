@@ -3,6 +3,8 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import type { HostOptions, InstallSource, PluginEvent, PluginInfo, PluginSource, UiContribution, UiNode } from './types';
 import type { Track } from '../types';
+import type { UiAttachment } from './types';
+import { createAttachmentQueue } from './attachmentQueue';
 
 interface NativeHostCall { requestId: number; pluginId: string; generation: number; method: string; args: Record<string, unknown> }
 export function createPluginHost(options: HostOptions) {
@@ -21,6 +23,11 @@ export function createPluginHost(options: HostOptions) {
     .flatMap(p => p.manifest.contributions.map(c => ({ ...c, pluginId: p.manifest.id, key: `${p.manifest.id}/${c.id}` })))
     .sort((a, b) => a.order - b.order || a.key.localeCompare(b.key)));
   const contributions = (kind: UiContribution['kind']) => computed(() => contributionList.value.filter(c => c.kind === kind));
+  const attachmentQueue = createAttachmentQueue();
+  const attachments = computed<UiAttachment[]>(() => plugins.value
+    .filter(p => p.enabled && p.supported && running.value.includes(p.manifest.id))
+    .flatMap(p => (p.manifest.attachments ?? []).map(a => ({ ...a, pluginId: p.manifest.id, generation: p.generation, key: `${p.manifest.id}/${a.id}` })))
+    .sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || a.key.localeCompare(b.key)));
   let disposed = false;
   function invalidate() { revision.value++; }
   function permitted(info: PluginInfo, permission: string) {
@@ -152,7 +159,7 @@ export function createPluginHost(options: HostOptions) {
     finally { loading.value = false; }
   });
   onUnmounted(() => { disposed = true; unlisteners.forEach(stop => stop()); running.value = []; });
-  return { plugins, errors, running, revision, loading, contributions, call, refresh, setEnabled, retry, install, uninstall };
+  return { plugins, errors, running, revision, loading, contributions, attachments, attachmentQueue, call, refresh, setEnabled, retry, install, uninstall };
 }
 export type PluginHost = ReturnType<typeof createPluginHost>;
 const key: InjectionKey<PluginHost> = Symbol('PlayerPluginHost');

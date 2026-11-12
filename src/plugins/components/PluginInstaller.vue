@@ -3,7 +3,7 @@ import { computed, nextTick, onMounted, ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { usePluginHost } from '../host';
-import type { AndroidPluginDiscovery, CatalogEntry, PluginDownload, PluginPreview } from '../types';
+import type { AndroidCatalogInstallResult, AndroidPluginDiscovery, CatalogEntry, PluginDownload, PluginPreview } from '../types';
 import PluginMetadata from './PluginMetadata.vue';
 import PluginImage from './PluginImage.vue';
 import PluginCatalog from './PluginCatalog.vue';
@@ -26,6 +26,15 @@ const previewCard = ref<HTMLElement>();
 const android = ref(false);
 const apkPlugins = ref<AndroidPluginDiscovery['plugins']>([]);
 const apkWarnings = ref<string[]>([]);
+const catalogStatus = ref('');
+const apkFallback = ref<CatalogEntry>();
+async function downloadApk() {
+  if (busy.value || !apkFallback.value?.androidApkUrl) return;
+  busy.value = 'apk-download';
+  try { await openUrl(apkFallback.value.androidApkUrl); }
+  catch (e) { error.value = String(e); }
+  finally { busy.value = ''; }
+}
 onMounted(() => { android.value = /Android/i.test(navigator.userAgent); });
 let content = '';
 function resetPreview() { preview.value = undefined; content = ''; }
@@ -70,10 +79,29 @@ async function loadUrl() {
 async function loadCatalogPlugin(entry: CatalogEntry) {
   if (busy.value) return;
   busy.value = `catalog:${entry.id}`; error.value = ''; resetPreview();
+  catalogStatus.value = ''; apkFallback.value = undefined;
   try {
     if (android.value && entry.androidApkUrl) {
-      await openUrl(entry.androidApkUrl);
-      error.value = 'Install the APK, then select Find APK plugins to connect it.';
+      if (!entry.version) {
+        apkFallback.value = entry;
+        catalogStatus.value = 'This catalog entry has no version to verify. Download the APK manually, then find its plugin.';
+        return;
+      }
+      catalogStatus.value = 'Installing APK… Complete the Android installer to continue.';
+      const result = await invoke<AndroidCatalogInstallResult>('plugins_android_install_catalog', {
+        url: entry.androidApkUrl, expectedId: entry.id, expectedVersion: entry.version,
+      });
+      if (result.status === 'installed' && result.preview) {
+        showPreview(result.preview.content, result.preview);
+        catalogStatus.value = 'APK installed. Review the permissions to connect the plugin.';
+      } else {
+        apkFallback.value = entry;
+        catalogStatus.value = result.message || (result.status === 'cancelled'
+          ? 'APK installation cancelled.'
+          : result.status === 'permission-denied'
+            ? 'APK installation permission was denied.'
+            : 'APK installation could not be completed.');
+      }
       return;
     }
 
@@ -81,7 +109,13 @@ async function loadCatalogPlugin(entry: CatalogEntry) {
       url: entry.installUrl || entry.repository, expectedId: entry.id,
     });
     showPreview(downloaded.content, downloaded);
-  } catch (e) { error.value = String(e); }
+  } catch (e) {
+    error.value = String(e);
+    if (android.value && entry.androidApkUrl) {
+      apkFallback.value = entry;
+      catalogStatus.value = 'APK installation could not be completed.';
+    }
+  }
   finally { busy.value = ''; }
 }
 async function install() {
@@ -128,6 +162,14 @@ async function uninstall(id: string) {
       </div>
     </div>
     <PluginCatalog :busy="Boolean(busy)" :pending-id="catalogPendingId" @review="loadCatalogPlugin" @uninstall="uninstall" @notify="error = $event" />
+    <p v-if="catalogStatus" role="status">{{ catalogStatus }}</p>
+    <div v-if="apkFallback" class="plugin-card">
+      <p>Download and install {{ apkFallback.name }} manually, then find its APK plugin to review the connection.</p>
+      <div class="plugin-actions">
+        <button class="control-button" :disabled="Boolean(busy)" :aria-busy="busy === 'apk-download'" @click="downloadApk">Download APK</button>
+        <button class="control-button" :disabled="Boolean(busy)" :aria-busy="busy === 'scan'" @click="scanApks">{{ busy === 'scan' ? 'Scanning…' : 'Find APK plugins' }}</button>
+      </div>
+    </div>
     <div class="plugin-catalog-submission">
       <a :href="submissionUrl" @click.prevent="openSubmission">Add your plugin <AppIcon name="external-link" :size="14" /></a>
     </div>

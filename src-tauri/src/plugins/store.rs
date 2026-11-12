@@ -463,6 +463,7 @@ mod tests {
         p.manifest.id = "example.test".into();
         p.manifest.permissions = vec!["settings".into()];
         p.manifest.contributions.clear();
+        p.manifest.attachments.clear();
         let source = InstallSource {
             url: "https://github.com/example/plugin".into(),
             repository: Some("https://github.com/example/plugin".into()),
