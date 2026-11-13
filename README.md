@@ -295,6 +295,22 @@ pnpm test:contributors
 cd src-tauri && cargo test # Rust tests
 ```
 
+### App icons
+
+`public/app-icon.svg` is the original transparent logo, also used by About and
+the browser favicon. Regenerate desktop, iOS, and Android launcher assets with:
+
+```bash
+pnpm tauri icon public/app-icon.svg
+# Tauri CLI 2.10.1 emits 49px hdpi launchers; restore Android's required 72px:
+sips -z 72 72 src-tauri/gen/android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png --out src-tauri/gen/android/app/src/main/res/mipmap-hdpi/ic_launcher.png
+sips -z 72 72 src-tauri/gen/android/app/src/main/res/mipmap-xxxhdpi/ic_launcher_round.png --out src-tauri/gen/android/app/src/main/res/mipmap-hdpi/ic_launcher_round.png
+```
+
+The CLI writes Android resources directly to `src-tauri/gen/android/app/src/main/res/`
+when that project exists. Keep the transparent desktop/Android foreground assets;
+iOS and Android adaptive backgrounds use the tooling's default white treatment.
+
 ### Profile library indexing with Tracy
 
 Run the optimized, instrumented desktop build, then connect the Tracy Profiler

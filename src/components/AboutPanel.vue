@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue';
 import { Marked } from 'marked';
-import appIconUrl from '../../src-tauri/icons/128x128.png';
+import appIconUrl from '/app-icon.svg';
 import contributorSnapshot from '../generated/contributors.json';
 import type { AboutInfo, AboutUpdateStatus, Contributor } from '../types/settings';
 import AppIcon from './AppIcon.vue';
