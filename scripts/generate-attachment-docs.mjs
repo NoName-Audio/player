@@ -116,8 +116,11 @@ export function generateAttachments({ root = process.cwd(), output = 'plugins/do
   const version = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8')).version;
   const commit = git('rev-parse', 'HEAD');
   // Ignore only this generated destination; existing user/submodule changes remain visible.
-  const relativeOutput = path.relative(root, path.resolve(root, output)).split(path.sep).join('/');
-  const dirty = git('status', '--porcelain', '--untracked-files=normal', '--', '.', `:(exclude)${relativeOutput}`);
+  const relativeOutput = path.relative(path.resolve(root), path.resolve(root, output));
+  const insideRepository = relativeOutput !== '' && relativeOutput !== '..'
+    && !relativeOutput.startsWith(`..${path.sep}`) && !path.isAbsolute(relativeOutput);
+  const exclusions = insideRepository ? [`:(top,literal,exclude)${relativeOutput.split(path.sep).join('/')}`] : [];
+  const dirty = git('status', '--porcelain', '--untracked-files=normal', '--', '.', ...exclusions);
   const status = dirty ? 'dirty/local checkout (not a release snapshot)' : 'clean checkout';
   const targets = extractAttachments(root);
   const destination = path.resolve(root, output);

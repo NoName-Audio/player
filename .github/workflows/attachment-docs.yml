@@ -82,7 +82,9 @@ jobs:
       - name: Install generator dependencies
         run: pnpm install --frozen-lockfile
       - name: Generate release documentation
-        run: node scripts/generate-attachment-docs.mjs --output "$RUNNER_TEMP/attachment-targets.md"
+        run: |
+          node scripts/generate-attachment-docs.mjs --output attachment-targets.md
+          mv attachment-targets.md "$RUNNER_TEMP/attachment-targets.md"
       # The publisher is trusted workflow code, not code from the release tag.
       - name: Checkout automation
         uses: actions/checkout@v6

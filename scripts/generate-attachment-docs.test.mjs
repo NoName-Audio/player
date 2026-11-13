@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { extractAttachments, renderAttachments } from './generate-attachment-docs.mjs';
+import { execFileSync } from 'node:child_process';
+import { extractAttachments, renderAttachments, generateAttachments } from './generate-attachment-docs.mjs';
 
 function fixture(t, registration) {
   const root = mkdtempSync(path.join(os.tmpdir(), 'attachment-docs-'));
@@ -40,4 +41,20 @@ test('rejects dynamic IDs and nonstatic options', t => {
 test('rejects unresolved context types', t => {
   const root = fixture(t, `attach(Card, { target: 'Card', context: () => ({ value: undefined as any }) });`);
   assert.throws(() => extractAttachments(root), /Context field value has unresolved any/);
+});
+
+test('external output preserves clean provenance and detects unrelated changes', t => {
+  const root = fixture(t, `attach(Card, { target: 'Card', context: p => ({ album: p.album }) });`);
+  const outside = mkdtempSync(path.join(os.tmpdir(), 'attachment-output-'));
+  t.after(() => rmSync(outside, { recursive: true, force: true }));
+  writeFileSync(path.join(root, 'package.json'), JSON.stringify({ version: '1.0.0' }));
+  writeFileSync(path.join(root, '.gitignore'), 'node_modules\n');
+  const git = (...args) => execFileSync('git', ['-C', root, ...args], { stdio: 'pipe' });
+  git('init');
+  git('add', '.');
+  git('-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-m', 'fixture');
+  const output = path.join(outside, 'attachment-targets.md');
+  assert.equal(generateAttachments({ root, output }).status, 'clean checkout');
+  writeFileSync(path.join(root, 'unrelated.txt'), 'local change');
+  assert.equal(generateAttachments({ root, output }).status, 'dirty/local checkout (not a release snapshot)');
 });
