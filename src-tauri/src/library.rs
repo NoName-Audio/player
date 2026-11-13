@@ -251,6 +251,7 @@ impl LibraryState {
         init_schema(&conn)?;
         purge_internal_library_rows(&conn)?;
         prepare_physical_hash_repair(&conn)?;
+        crate::waveform_cache::init(&conn)?;
 
 
         log_library_snapshot("startup", &data_dir, db_path.as_deref(), &conn);
@@ -273,6 +274,7 @@ impl LibraryState {
             spawn_album_tag_backfill(Arc::clone(&conn), data_dir.clone(), app_handle.clone());
         }
         start_cover_maintenance(Arc::clone(&conn), data_dir.clone(), app_handle.clone());
+        crate::waveform_cache::start(Arc::clone(&conn), data_dir.clone(), app_handle.clone());
         start_watcher(data_dir.clone(), Arc::clone(&conn), app_handle)?;
 
         Ok(Self { conn, data_dir })
@@ -650,6 +652,12 @@ impl LibraryState {
             &current.soulseek_password,
         )
     }
+}
+
+/// Fetches compact persisted waveform data without decoding or expanding library lists.
+#[tauri::command]
+pub fn get_track_waveform(track_id: i64, state: tauri::State<'_, LibraryState>) -> Result<Option<Vec<u8>>, String> {
+    crate::waveform_cache::read(&state.conn.lock().unwrap(), track_id).map_err(|e| e.to_string())
 }
 
 fn escape_like(value: &str) -> String {
@@ -1837,6 +1845,7 @@ pub(crate) fn index_file(conn: &Connection, data_dir: &Path, abs: &Path) -> Resu
     }
 
     let rel = rel_path(data_dir, abs);
+    crate::waveform_cache::source_changed(conn, data_dir, &rel)?;
     let sidecar_cover = find_sidecar_cover_candidate(data_dir, abs);
 
     let modified_secs = path_modified_secs(abs);
