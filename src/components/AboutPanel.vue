@@ -3,7 +3,7 @@ import { ref } from 'vue';
 import { Marked } from 'marked';
 import appIconUrl from '/app-icon.svg';
 import contributorSnapshot from '../generated/contributors.json';
-import type { AboutInfo, AboutUpdateStatus, Contributor } from '../types/settings';
+import type { AboutInfo, AboutUpdateStatus, AndroidUpdateStatus, Contributor } from '../types/settings';
 import AppIcon from './AppIcon.vue';
 
 const markdown = new Marked({ gfm: true, breaks: true, renderer: { html: () => '' } });
@@ -22,8 +22,9 @@ defineProps<{
   desktopReady: boolean;
   updateError: string;
   updateDone: string;
+  androidUpdate: AndroidUpdateStatus | null;
 }>();
-const emit = defineEmits<{ check: []; update: []; openRelease: []; openRepository: []; retry: []; openExternal: [url: string] }>();
+const emit = defineEmits<{ check: []; update: []; cancelUpdate: []; openRelease: []; openRepository: []; retry: []; openExternal: [url: string] }>();
 function openNoteLink(event: MouseEvent) {
   const link = (event.target as HTMLElement).closest('a');
   if (!link) return;
@@ -53,12 +54,17 @@ function openNoteLink(event: MouseEvent) {
           <p v-else-if="status">{{ status.latest_version ? 'You have the latest release.' : status.message }}</p>
           <p v-else>Check for the latest version of Player.</p>
         </div>
-        <button v-if="status?.has_update" class="control-button control-button-primary" :disabled="updating" :aria-busy="updating" @click="emit('update')">
-          {{ updating ? (progress !== null ? `Downloading ${progress}%` : 'Downloading...') : desktopReady || status.asset_url ? 'Update now' : 'View release' }}
+        <button v-if="status?.has_update || updating" class="control-button control-button-primary" :disabled="updating" :aria-busy="updating" @click="emit('update')">
+          {{ updating ? (androidUpdate?.status === 'permission' ? 'Permission required' : androidUpdate?.status === 'installing' ? 'Installer opened' : androidUpdate?.status === 'verifying' ? 'Verifying APK...' : progress !== null ? `Downloading ${progress}%` : 'Downloading...') : desktopReady || status?.asset_url ? 'Update now' : 'View release' }}
         </button>
         <button class="control-button" v-else :disabled="checking" :aria-busy="checking" @click="emit('check')">{{ checking ? 'Checking...' : 'Check for updates' }}</button>
         <progress v-if="updating && progress !== null" max="100" :value="progress" aria-label="Update download progress" />
+        <button v-if="updating && androidUpdate && androidUpdate.status !== 'installing'" class="control-button" @click="emit('cancelUpdate')">Cancel update</button>
       </div>
+      <p v-if="androidUpdate?.status === 'downloading'" role="status">Downloaded {{ androidUpdate.downloaded.toLocaleString() }}{{ androidUpdate.total > 0 ? ` of ${androidUpdate.total.toLocaleString()}` : '' }} bytes.</p>
+      <p v-else-if="androidUpdate?.status === 'verifying'" role="status">Verifying the downloaded APK before installation.</p>
+      <p v-else-if="androidUpdate?.status === 'permission'" role="status">Allow Player to install unknown apps in Android settings, then return here. Installation resumes automatically.</p>
+      <p v-else-if="androidUpdate?.status === 'installing'" role="status">Continue in Android's package installer. Opening the installer does not confirm that the update was installed.</p>
       <p v-if="updateError" class="error" role="alert">{{ updateError }}</p>
       <p v-if="updateDone" role="status">{{ updateDone }}</p>
       <div v-if="status?.release_url" class="links">

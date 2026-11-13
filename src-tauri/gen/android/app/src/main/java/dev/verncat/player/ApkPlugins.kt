@@ -64,8 +64,9 @@ class ApkPlugins(private val activity: Activity) : Plugin(activity) {
         sharedRuntime ?: InstalledApkRuntime(activity.applicationContext).also { sharedRuntime = it }
     }
     private val installer = CatalogApkInstaller(activity, runtime, ::startActivityForResult)
+    private val selfUpdater = SelfUpdater(activity, ::startActivityForResult)
 
-    override fun onDestroy() { installer.close(); executor.execute { runtime.closeAll() } }
+    override fun onDestroy() { selfUpdater.close(); installer.close(); executor.execute { runtime.closeAll() } }
 
     private fun perform(invoke: Invoke, block: () -> JSObject) {
         executor.execute {
@@ -86,6 +87,14 @@ class ApkPlugins(private val activity: Activity) : Plugin(activity) {
     fun catalogPermissionResult(invoke: Invoke, result: androidx.activity.result.ActivityResult) = installer.permissionResult(invoke)
     @app.tauri.annotation.ActivityCallback
     fun catalogInstallResult(invoke: Invoke, result: androidx.activity.result.ActivityResult) = installer.installResult(invoke, result)
+    @Command fun selfUpdateStart(invoke: Invoke) = selfUpdater.start(invoke)
+    @Command fun selfUpdateStatus(invoke: Invoke) = selfUpdater.snapshot(invoke)
+    @Command fun selfUpdateContinue(invoke: Invoke) = selfUpdater.continueUpdate(invoke)
+    @Command fun selfUpdateCancel(invoke: Invoke) = selfUpdater.cancel(invoke)
+    @app.tauri.annotation.ActivityCallback
+    fun selfUpdatePermissionResult(invoke: Invoke, result: androidx.activity.result.ActivityResult) = selfUpdater.permissionResult(invoke)
+    @app.tauri.annotation.ActivityCallback
+    fun selfUpdateInstallResult(invoke: Invoke, result: androidx.activity.result.ActivityResult) = selfUpdater.installResult(result)
 }
 
 /** Access is serialized by the Tauri adapter. Kept separate for device integration tests. */

@@ -53,6 +53,10 @@ struct GithubRelease {
     body: Option<String>,
     #[serde(default)]
     assets: Vec<GithubAsset>,
+    #[serde(default)]
+    draft: bool,
+    #[serde(default)]
+    prerelease: bool,
 }
 
 #[tauri::command]
@@ -90,26 +94,7 @@ pub fn about_check_updates() -> Result<AboutUpdateStatus, String> {
         });
     };
 
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .build()
-        .map_err(|err| format!("build http client: {err}"))?;
-    let url = format!("https://api.github.com/repos/{repo_slug}/releases/latest");
-
-    let response = client
-        .get(url)
-        .header(USER_AGENT, format!("player/{}", env!("CARGO_PKG_VERSION")))
-        .header(ACCEPT, "application/vnd.github+json")
-        .send()
-        .map_err(|err| format!("request latest release: {err}"))?;
-
-    if !response.status().is_success() {
-        return Err(format!("GitHub releases returned {}", response.status()));
-    }
-
-    let release: GithubRelease = response
-        .json()
-        .map_err(|err| format!("decode latest release: {err}"))?;
+    let release = fetch_latest_release(repo_slug)?;
     let latest_version = normalize_version_tag(&release.tag_name);
     let has_update = compare_versions(&latest_version, &current_version) == Ordering::Greater;
     let asset_url = if has_update {
@@ -173,6 +158,9 @@ fn parse_version_parts(value: &str) -> Vec<u64> {
 }
 
 fn find_platform_asset(assets: &[GithubAsset]) -> Option<String> {
+    if std::env::consts::OS == "android" {
+        return find_android_asset(assets);
+    }
     let os = std::env::consts::OS;
     let arch = std::env::consts::ARCH;
 
@@ -208,6 +196,79 @@ fn find_platform_asset(assets: &[GithubAsset]) -> Option<String> {
         .map(|a| a.browser_download_url.clone())
 }
 
+fn fetch_latest_release(repo_slug: &str) -> Result<GithubRelease, String> {
+    let response = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .map_err(|err| format!("build http client: {err}"))?
+        .get(format!("https://api.github.com/repos/{repo_slug}/releases/latest"))
+        .header(USER_AGENT, format!("player/{}", env!("CARGO_PKG_VERSION")))
+        .header(ACCEPT, "application/vnd.github+json")
+        .send()
+        .map_err(|err| format!("request latest release: {err}"))?;
+    if !response.status().is_success() {
+        return Err(format!("GitHub releases returned {}", response.status()));
+    }
+    let release: GithubRelease = response.json()
+        .map_err(|err| format!("decode latest release: {err}"))?;
+    #[cfg(target_os = "android")]
+    ensure_stable_release(&release)?;
+    Ok(release)
+}
+
+#[cfg(any(target_os = "android", test))]
+fn ensure_stable_release(release: &GithubRelease) -> Result<(), String> {
+    if release.draft || release.prerelease {
+        return Err("Latest release is not a published stable release".to_string());
+    }
+    Ok(())
+}
+
+fn find_android_asset(assets: &[GithubAsset]) -> Option<String> {
+    assets.iter()
+        .find(|asset| asset.name == "player-android-universal.apk")
+        .map(|asset| asset.browser_download_url.clone())
+}
+
+#[cfg(target_os = "android")]
+#[tauri::command]
+pub async fn about_do_update(_app: tauri::AppHandle, asset_url: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let repo = BUILD_GITHUB_REPOSITORY.ok_or("GitHub repository was not detected at build time")?;
+        let release = fetch_latest_release(repo)?;
+        if compare_versions(&normalize_version_tag(&release.tag_name), env!("CARGO_PKG_VERSION")) != Ordering::Greater {
+            return Err("No newer stable release is available".to_string());
+        }
+        if find_android_asset(&release.assets).as_deref() != Some(asset_url.as_str()) {
+            return Err("Update URL does not match the official Android release asset".to_string());
+        }
+        crate::plugins::android::mobile_call("selfUpdateStart", serde_json::json!({"url": asset_url}))
+            .map(|status| status.to_string())
+    }).await.map_err(|err| err.to_string())?
+}
+
+async fn update_native_call(method: &'static str) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::plugins::android::mobile_call(method, serde_json::json!({}))
+    }).await.map_err(|err| err.to_string())?
+}
+
+#[tauri::command]
+pub async fn about_update_status() -> Result<serde_json::Value, String> {
+    update_native_call("selfUpdateStatus").await
+}
+
+#[tauri::command]
+pub async fn about_update_continue() -> Result<serde_json::Value, String> {
+    update_native_call("selfUpdateContinue").await
+}
+
+#[tauri::command]
+pub async fn about_update_cancel() -> Result<serde_json::Value, String> {
+    update_native_call("selfUpdateCancel").await
+}
+
+#[cfg(not(target_os = "android"))]
 #[tauri::command]
 pub async fn about_do_update(app: tauri::AppHandle, asset_url: String) -> Result<String, String> {
     use futures_util::StreamExt;
@@ -292,4 +353,49 @@ pub async fn about_do_update(app: tauri::AppHandle, asset_url: String) -> Result
         .map_err(|e| format!("Open failed: {e}"))?;
 
     Ok(dest_str)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn asset(name: &str) -> GithubAsset {
+        GithubAsset {
+            name: name.to_string(),
+            browser_download_url: format!("https://github.com/owner/player/releases/download/v2/{name}"),
+        }
+    }
+
+    #[test]
+    fn android_selects_official_universal_apk() {
+        let assets = [
+            asset("player-arm64.apk"),
+            asset("plugin-android-universal.apk"),
+            asset("player-android-universal.apk.sig"),
+            asset("player-android-universal.apk"),
+        ];
+        assert_eq!(find_android_asset(&assets), Some(assets[3].browser_download_url.clone()));
+    }
+
+    #[test]
+    fn android_does_not_fall_back_to_other_apks() {
+        let assets = [asset("player-arm64.apk"), asset("app-universal-release.apk")];
+        assert_eq!(find_android_asset(&assets), None);
+        assert_eq!(find_android_asset(&[]), None);
+    }
+
+    #[test]
+    fn android_requires_published_stable_release() {
+        for (draft, prerelease) in [(false, false), (true, false), (false, true), (true, true)] {
+            let release = GithubRelease {
+                tag_name: "v2.0.0".to_string(),
+                html_url: None,
+                body: None,
+                assets: vec![asset("player-android-universal.apk")],
+                draft,
+                prerelease,
+            };
+            assert_eq!(ensure_stable_release(&release).is_ok(), !draft && !prerelease);
+        }
+    }
 }
