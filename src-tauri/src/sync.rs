@@ -47,6 +47,9 @@ pub struct RemoteTrack {
     pub source_kind: Option<String>,
     pub source_path: Option<String>,
     pub cue_path: Option<String>,
+    /// BLAKE3 of the physical source bytes, never a CUE segment identity.
+    #[serde(default)]
+    pub source_hash: Option<String>,
     pub file_size: Option<u64>,
 }
 
@@ -369,7 +372,10 @@ fn dedup_track_meta_by_hash(track_meta: Vec<SyncTrackMeta>) -> Vec<SyncTrackMeta
 fn load_remote_tracks(conn: &Connection) -> Vec<RemoteTrack> {
     let mut tracks: Vec<RemoteTrack> = conn
         .prepare(
-            "SELECT file_hash, path, title, artist, album, source_kind, source_path, cue_path \
+            "SELECT file_hash, path, title, artist, album, source_kind, source_path, cue_path, \
+             (SELECT physical.file_hash FROM tracks physical WHERE physical.path = \
+              COALESCE(NULLIF(tracks.source_path, ''), tracks.path) \
+              AND COALESCE(physical.source_kind, '') != 'cue') \
              FROM tracks WHERE file_hash IS NOT NULL",
         )
         .map(|mut s| {
@@ -384,6 +390,7 @@ fn load_remote_tracks(conn: &Connection) -> Vec<RemoteTrack> {
                     source_path: row.get(6)?,
                     cue_path: row.get(7)?,
                     file_size: None,
+                    source_hash: row.get(8)?,
                 })
             })
             .map(|rows| rows.filter_map(|r| r.ok()).collect::<Vec<_>>())
@@ -1378,10 +1385,17 @@ fn serve_control_volume(
 }
 
 fn attach_remote_track_file_sizes(data_dir: &Path, tracks: &mut [RemoteTrack]) {
+    let mut source_hashes: HashMap<PathBuf, Option<String>> = HashMap::new();
     for track in tracks {
         let source_rel = remote_track_source_rel(track);
         let abs = rel_path_to_abs(data_dir, source_rel);
-        track.file_size = std::fs::metadata(abs).ok().map(|meta| meta.len());
+        track.file_size = std::fs::metadata(&abs).ok().map(|meta| meta.len());
+        // Physical rows supply a cached identity. A CUE-only library can lack
+        // that row; hash each distinct source only when building its manifest.
+        if track.source_hash.is_none() {
+            track.source_hash = source_hashes.entry(abs.clone())
+                .or_insert_with(|| crate::library::hash_file(&abs)).clone();
+        }
     }
 }
 
@@ -1423,6 +1437,14 @@ fn serve_file(request: tiny_http::Request, hash: &str, conn: &Arc<Mutex<Connecti
     });
     match std::fs::read(&abs) {
         Ok(data) => {
+            let actual = blake3::hash(&data).to_hex().to_string();
+            let virtual_source: bool = conn.lock().unwrap().query_row(
+                "SELECT COALESCE(source_kind, '') = 'cue' FROM tracks WHERE file_hash = ?1 LIMIT 1",
+                params![hash], |row| row.get(0)).unwrap_or(false);
+            if !virtual_source && actual != hash {
+                let _ = request.respond(tiny_http::Response::empty(409));
+                return;
+            }
             let content_type =
                 Header::from_bytes(b"Content-Type", b"application/octet-stream").unwrap();
             let _ = request
@@ -1832,6 +1854,11 @@ fn register_downloaded_hash(
     abs_path: &Path,
     hash: &str,
 ) -> Result<(), String> {
+    let actual = crate::library::hash_file(abs_path)
+        .ok_or_else(|| format!("cannot hash {}", abs_path.display()))?;
+    if actual != hash {
+        return Err(format!("physical identity mismatch: expected {hash}, received {actual}"));
+    }
     let rel = abs_path
         .strip_prefix(data_dir)
         .map_err(|_| {
@@ -1861,9 +1888,23 @@ fn register_downloaded_hash(
     Ok(())
 }
 
+fn store_verified_download(path: &Path, bytes: &[u8], expected: &str) -> Result<(), String> {
+    if blake3::hash(bytes).to_hex().as_str() != expected {
+        return Err(format!("physical identity mismatch for {expected}"));
+    }
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new().write(true).create_new(true)
+        .open(path).map_err(|e| e.to_string())?;
+    if let Err(error) = file.write_all(bytes) {
+        drop(file);
+        let _ = std::fs::remove_file(path);
+        return Err(error.to_string());
+    }
+    Ok(())
+}
+
 fn file_hash_hex(path: &Path) -> Option<String> {
-    let bytes = std::fs::read(path).ok()?;
-    Some(blake3::hash(&bytes).to_hex().to_string())
+    crate::library::hash_file(path)
 }
 
 fn path_with_hash_suffix(path: &Path, short_hash: &str, attempt: usize) -> PathBuf {
@@ -2348,6 +2389,7 @@ fn do_sync(peer_host: String, peer_name: String, peer_addresses: Vec<String>, pe
 
     let mut done = 0usize;
     let mut added = 0usize;
+    let mut failures = 0usize;
     let mut downloaded_sources: HashSet<String> = HashSet::new();
     let mut downloaded_cues: HashSet<String> = HashSet::new();
     for track in &missing {
@@ -2392,11 +2434,24 @@ fn do_sync(peer_host: String, peer_name: String, peer_addresses: Vec<String>, pe
         let source_rel = remote_track_source_rel(track);
         let filename = rel_filename(source_rel);
         let requested_save_path = save_dir.join(filename);
-        let save_path = if is_cue_remote_track(track) {
-            requested_save_path.clone()
-        } else {
-            choose_download_save_path(&requested_save_path, &track.hash)
+        let Some(physical_hash) = track.source_hash.as_deref()
+            .or_else(|| (!is_cue_remote_track(track)).then_some(track.hash.as_str())) else {
+            failures += 1;
+            done += 1;
+            continue;
         };
+        if !is_cue_remote_track(track) && physical_hash != track.hash {
+            failures += 1;
+            done += 1;
+            continue;
+        }
+        if is_cue_remote_track(track) && requested_save_path.exists()
+            && file_hash_hex(&requested_save_path).as_deref() != Some(physical_hash) {
+            // Keep CUE FILE references intact without overwriting unrelated
+            // media. A deterministic source directory is reused on retry.
+            save_dir.push(physical_hash);
+        }
+        let save_path = choose_download_save_path(&save_dir.join(filename), physical_hash);
         if save_path != requested_save_path {
             eprintln!(
                 "[sync] path collision for hash {}: requested {}, using {}",
@@ -2448,8 +2503,9 @@ fn do_sync(peer_host: String, peer_name: String, peer_addresses: Vec<String>, pe
 
         // Fast path: if we already have the exact same-content file, only register hash mapping.
         if save_path.exists() {
-            if let Err(e) = register_downloaded_hash(&conn, &data_dir, &save_path, &track.hash) {
+            if let Err(e) = register_downloaded_hash(&conn, &data_dir, &save_path, physical_hash) {
                 eprintln!("[sync] failed to register existing file for hash {}: {e}", track.hash);
+                failures += 1;
             } else {
                 added += 1;
                 downloaded_sources.insert(source_rel.to_string());
@@ -2515,15 +2571,22 @@ fn do_sync(peer_host: String, peer_name: String, peer_addresses: Vec<String>, pe
             label,
             item_total_hint: track.file_size,
         };
-        if let Ok(bytes) = peer_download_with_progress(&client, &base_urls, &path, &progress) {
-            if std::fs::write(&save_path, &bytes).is_ok() {
-                if let Err(e) = register_downloaded_hash(&conn, &data_dir, &save_path, &track.hash) {
-                    eprintln!("[sync] failed to register downloaded file for hash {}: {e}", track.hash);
-                } else {
+        match peer_download_with_progress(&client, &base_urls, &path, &progress) {
+            Ok(bytes) => match store_verified_download(&save_path, &bytes, physical_hash)
+                .and_then(|()| register_downloaded_hash(&conn, &data_dir, &save_path, physical_hash)) {
+                Ok(()) => {
                     added += 1;
                     downloaded_sources.insert(source_rel.to_string());
                     download_cue_file_for_track(&client, &base_urls, track, &save_dir, &mut downloaded_cues);
                 }
+                Err(error) => {
+                    eprintln!("[sync] rejected transfer: {error}");
+                    failures += 1;
+                }
+            },
+            Err(error) => {
+                eprintln!("[sync] download failed: {error}");
+                failures += 1;
             }
         }
         if source_claimed {
@@ -2559,7 +2622,18 @@ fn do_sync(peer_host: String, peer_name: String, peer_addresses: Vec<String>, pe
             done,
             None,
         );
-        app.state::<crate::library::LibraryState>().reindex(&app);
+        app.state::<crate::library::LibraryState>().reindex_for_sync(&app);
+    }
+    // A transferred source is not a virtual track until the ordinary CUE
+    // indexer has reconstructed its segment identity. Missing/broken sidecars
+    // must not be reported as a successful sync.
+    {
+        let c = conn.lock().unwrap();
+        for track in &missing {
+            if is_cue_remote_track(track) && !local_hash_exists(&c, &track.hash) {
+                failures += 1;
+            }
+        }
     }
 
     // 5 ── Sync metadata, playlists, smart playlists, history ─────────────────
@@ -2593,10 +2667,12 @@ fn do_sync(peer_host: String, peer_name: String, peer_addresses: Vec<String>, pe
         &peer_name,
         remote_device_name.as_deref(),
         remote_device_emoji.as_deref(),
-        "done",
+        if failures == 0 { "done" } else { "error" },
         total,
         done,
-        Some(if added == 0 {
+        Some(if failures > 0 {
+            format!("{failures} transfer(s) failed; {added} source file(s) added")
+        } else if added == 0 {
             "Library metadata synced".to_string()
         } else {
             format!("{added} new track(s) added")
@@ -2749,4 +2825,53 @@ pub fn remote_playback_volume(
         "/control/volume",
         &RemotePlaybackVolumeRequest { value },
     )
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+
+    #[test]
+    fn rejected_physical_identity_never_creates_collision_files() {
+        let dir = std::env::temp_dir().join(format!("sync-identity-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let original = dir.join("album.flac");
+        std::fs::write(&original, b"existing media").unwrap();
+        let virtual_hash = blake3::hash(b"cue segment identity").to_hex().to_string();
+        for _ in 0..3 {
+            let target = choose_download_save_path(&original, &virtual_hash);
+            assert!(store_verified_download(&target, b"actual physical audio", &virtual_hash).is_err());
+            assert!(!target.exists());
+        }
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        assert_eq!(std::fs::read(&original).unwrap(), b"existing media");
+        let bytes = b"verified physical audio";
+        let hash = blake3::hash(bytes).to_hex().to_string();
+        let target = choose_download_save_path(&original, &hash);
+        store_verified_download(&target, bytes, &hash).unwrap();
+        assert_eq!(choose_download_save_path(&original, &hash), target);
+        assert!(store_verified_download(&target, b"different bytes", &hash).is_err());
+        assert_eq!(std::fs::read(&target).unwrap(), bytes);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod registration_tests {
+    use super::*;
+    #[test]
+    fn virtual_identity_cannot_poison_physical_row() {
+        let path = std::env::temp_dir().join(format!("sync-register-{}", std::process::id()));
+        std::fs::write(&path, b"physical bytes").unwrap();
+        let conn = Arc::new(Mutex::new(Connection::open_in_memory().unwrap()));
+        conn.lock().unwrap().execute_batch("CREATE TABLE tracks(path TEXT UNIQUE, modified_secs INTEGER, file_hash TEXT, date_added INTEGER);").unwrap();
+        let virtual_hash = blake3::hash(b"virtual segment").to_hex().to_string();
+        assert!(register_downloaded_hash(&conn, path.parent().unwrap(), &path, &virtual_hash).is_err());
+        assert_eq!(conn.lock().unwrap().query_row("SELECT count(*) FROM tracks", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+        let physical = blake3::hash(b"physical bytes").to_hex().to_string();
+        register_downloaded_hash(&conn, path.parent().unwrap(), &path, &physical).unwrap();
+        assert_eq!(conn.lock().unwrap().query_row("SELECT file_hash FROM tracks", [], |r| r.get::<_, String>(0)).unwrap(), physical);
+        std::fs::remove_file(path).unwrap();
+    }
 }

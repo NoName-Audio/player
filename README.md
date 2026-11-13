@@ -155,6 +155,8 @@ These screenshots were captured with the built-in demo mode. Click any image to 
 - Peer discovery over mDNS.
 - Local network sync of files, metadata, playlists, and history between devices.
 - Merkle-style reconciliation, so a sync only transfers what changed.
+- File sync verifies physical BLAKE3 identities before saving or registering media; CUE segment identities remain separate and are reconstructed by the normal CUE indexer. Invalid or unverifiable transfers are reported as failures, not accepted as new tracks. CUE transfers from older peers without physical source identities require upgrading the sending device.
+- On the first launch after the physical-identity repair, the library reads each indexed physical audio file once to rebuild cached hashes, even when its modification time is unchanged. A persistent migration marker makes subsequent launches and syncs reuse the normal cache. This does not modify media, remove existing duplicate files, or reset playlists, history, or edited metadata.
 - Play on another device: hand the current track over to a peer and keep controlling it.
 - IPv4/IPv6-friendly internal HTTP server. There's no authentication, so use it on networks you trust.
 
