@@ -250,6 +250,7 @@ impl LibraryState {
         };
         init_schema(&conn)?;
         purge_internal_library_rows(&conn)?;
+        repair_physical_file_hashes(&conn, &data_dir)?;
 
         // Only run the full directory scan on first launch (new DB).
         // On subsequent launches the FS watcher handles incremental changes;
@@ -516,6 +517,11 @@ impl LibraryState {
             .spawn(move || {
                 index_directory_async(&conn, &data_dir, &app);
             });
+    }
+
+    /// Sync merges metadata by segment identity, so indexing must finish first.
+    pub(crate) fn reindex_for_sync(&self, app: &tauri::AppHandle) {
+        index_directory_async(&self.conn, &self.data_dir, app);
     }
 
     pub fn seed_demo_content(&self) -> Result<(), BoxError> {
@@ -1087,6 +1093,50 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     let _ = conn
         .execute_batch("ALTER TABLE smart_playlists ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0");
     let _ = conn.execute_batch("ALTER TABLE smart_playlists ADD COLUMN pinned_at INTEGER");
+    Ok(())
+}
+
+/// Upgrade cached physical identities once, before the connection is exposed to
+/// sync. Older sync code could write a remote hash onto different local bytes;
+/// mtime-based indexing cannot detect that corruption. Only identity fields are
+/// changed, so edits, ratings, history, playlists and CUE segment IDs survive.
+fn repair_physical_file_hashes(conn: &Connection, data_dir: &Path) -> Result<(), BoxError> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS library_migrations (name TEXT PRIMARY KEY);",
+    )?;
+    let transaction = conn.unchecked_transaction()?;
+    let completed: bool = transaction.query_row(
+        "SELECT EXISTS(SELECT 1 FROM library_migrations WHERE name = 'physical-file-hashes-v1')",
+        [],
+        |row| row.get(0),
+    )?;
+    if completed {
+        return Ok(());
+    }
+
+    let physical_tracks: Vec<(i64, String)> = {
+        let mut statement = transaction.prepare(
+            "SELECT id, COALESCE(NULLIF(source_path, ''), path) FROM tracks
+             WHERE source_kind = 'file' AND segment_start_secs IS NULL AND cue_path IS NULL",
+        )?;
+        let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+    for (id, path) in physical_tracks {
+        let hash = hash_file(&data_dir.join(path));
+        let rarity = hash.as_deref().map(rarity_from_hash);
+        // Unreadable/missing files must not advertise an unverified identity.
+        // A later successful index retries them because their hash is NULL.
+        transaction.execute(
+            "UPDATE tracks SET file_hash = ?1, rarity = ?2 WHERE id = ?3",
+            params![hash, rarity, id],
+        )?;
+    }
+    transaction.execute(
+        "INSERT INTO library_migrations(name) VALUES ('physical-file-hashes-v1')",
+        [],
+    )?;
+    transaction.commit()?;
     Ok(())
 }
 
@@ -4517,6 +4567,76 @@ pub fn unmark_duplicates(
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn physical_hash_upgrade_repairs_unchanged_files_and_preserves_virtual_tracks() {
+        let suffix = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let data_dir = std::env::temp_dir().join(format!("player-hash-upgrade-{suffix}"));
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let audio = data_dir.join("song.flac");
+        std::fs::write(&audio, b"actual local bytes").unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let mtime = path_modified_secs(&audio);
+        conn.execute(
+            "INSERT INTO tracks(id,path,file_hash,rarity,modified_secs,title,manually_edited,is_liked,play_count,tags,date_added)
+             VALUES (1,'song.flac','poisoned','Mythic',?1,'My title',1,1,7,'personal',123)",
+            params![mtime],
+        ).unwrap();
+        conn.execute_batch(
+            "INSERT INTO tracks(id,path,file_hash,source_kind,source_path,cue_path,segment_start_secs)
+             VALUES (2,'song.cue#1','virtual-identity','cue','song.flac','song.cue',0);
+             INSERT INTO tracks(id,path,file_hash,rarity) VALUES (3,'missing.flac','unverified','Mythic');
+             INSERT INTO playlists(id,name) VALUES (1,'Favorites');
+             INSERT INTO playlist_tracks(playlist_id,track_id,position) VALUES (1,1,0);
+             INSERT INTO play_history(track_id,played_at) VALUES (1,456);",
+        ).unwrap();
+
+        repair_physical_file_hashes(&conn, &data_dir).unwrap();
+
+        let expected = hash_file(&audio).unwrap();
+        let track = get_track_by_id(&conn, 1).unwrap();
+        assert_eq!(track.file_hash.as_deref(), Some(expected.as_str()));
+        assert_eq!(track.rarity, Some(rarity_from_hash(&expected)));
+        assert_eq!(track.title.as_deref(), Some("My title"));
+        assert!(track.manually_edited && track.is_liked);
+        assert_eq!(track.play_count, 7);
+        assert_eq!(track.tags.as_deref(), Some("personal"));
+        assert_eq!(track.date_added, Some(123));
+        assert_eq!(conn.query_row("SELECT modified_secs FROM tracks WHERE id=1", [], |row| row.get::<_, i64>(0)).unwrap(), mtime);
+        assert_eq!(get_track_by_id(&conn, 2).unwrap().file_hash.as_deref(), Some("virtual-identity"));
+        assert!(get_track_by_id(&conn, 3).unwrap().file_hash.is_none());
+        assert!(get_track_by_id(&conn, 3).unwrap().rarity.is_none());
+        assert_eq!(conn.query_row("SELECT track_id FROM playlist_tracks", [], |row| row.get::<_, i64>(0)).unwrap(), 1);
+        assert_eq!(conn.query_row("SELECT track_id FROM play_history", [], |row| row.get::<_, i64>(0)).unwrap(), 1);
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[test]
+    fn physical_hash_upgrade_is_persistent_and_does_not_rehash_on_reopen() {
+        let suffix = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let data_dir = std::env::temp_dir().join(format!("player-hash-upgrade-once-{suffix}"));
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let audio = data_dir.join("song.flac");
+        std::fs::write(&audio, b"original bytes").unwrap();
+        let db = data_dir.join("app.db");
+        let conn = Connection::open(&db).unwrap();
+        init_schema(&conn).unwrap();
+        conn.execute("INSERT INTO tracks(path,file_hash) VALUES ('song.flac','poisoned')", []).unwrap();
+        repair_physical_file_hashes(&conn, &data_dir).unwrap();
+        let repaired = get_track_by_id(&conn, 1).unwrap().file_hash;
+        drop(conn);
+
+        // Removing the bytes makes an accidental second hash clear the identity.
+        std::fs::remove_file(audio).unwrap();
+        let conn = Connection::open(&db).unwrap();
+        init_schema(&conn).unwrap();
+        repair_physical_file_hashes(&conn, &data_dir).unwrap();
+        assert_eq!(get_track_by_id(&conn, 1).unwrap().file_hash, repaired);
+        assert!(repaired.is_some());
+        drop(conn);
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
 
     #[test]
     fn identified_metadata_is_committed_and_returned_with_derived_fields() {
