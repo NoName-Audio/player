@@ -3378,6 +3378,22 @@ async function followEditedTrackFromAlbumPage(before: Track, after: Track) {
 // Leaving the album artist field empty means the track artist.
 const albumArtistPlaceholder = computed(() => editForm.value.artist || 'Same as artist');
 
+function uploadFiles() {
+  const bridge = (window as any).AndroidBridge;
+  if (bridge?.pickAudioFiles) bridge.pickAudioFiles();
+  else openDataDir();
+}
+
+async function importPickedPaths(paths: string[]) {
+  try {
+    await invoke('import_dropped_files', { paths });
+  } catch (error) {
+    console.error('Failed to import picked files:', error);
+  } finally {
+    (window as any).AndroidBridge?.clearPickedFiles?.();
+  }
+}
+
 async function openDataDir() {
   const path = await invoke<string>('get_data_dir');
   // On Android, use the native JavascriptInterface bridge that calls
@@ -3772,6 +3788,7 @@ onMounted(() => {
     nextTick(() => { if (indexLogRef.value) indexLogRef.value.scrollTop = indexLogRef.value.scrollHeight; });
   });
 
+  (window as any)._onAndroidFilesPicked = importPickedPaths;
   // Android media controls: _mediaControl is called by the native notification buttons
   (window as any)._mediaControl = async (action: string) => {
     if (action === 'toggle')     { await toggleFromMediaControl(); }
@@ -3850,6 +3867,7 @@ onUnmounted(() => {
   window.removeEventListener('focus', onWindowFocus);
   document.removeEventListener('visibilitychange', onDocumentVisibilityChange);
   delete (window as any)._playbackFinished;
+  delete (window as any)._onAndroidFilesPicked;
   clearTrackLongPress();
   clearHomePinnedLongPress();
   if (libraryFilterTimer) clearTimeout(libraryFilterTimer);
@@ -3936,7 +3954,7 @@ onUnmounted(() => {
                 <div class="card-artist">From another device</div>
               </button>
 
-              <button type="button" class="card onboarding-music-card" @click="openDataDir">
+              <button type="button" class="card onboarding-music-card" @click="uploadFiles">
                 <div class="cover onboarding-action-cover onboarding-upload-cover">
                   <AppIcon name="folder" />
                   <span class="hover-play">
@@ -3944,7 +3962,7 @@ onUnmounted(() => {
                   </span>
                 </div>
                 <div class="card-title">Upload</div>
-                <div class="card-artist">From a folder on disk</div>
+                <div class="card-artist">Pick files from your device</div>
               </button>
 
               <div class="recent-onboarding-guide" aria-hidden="true">

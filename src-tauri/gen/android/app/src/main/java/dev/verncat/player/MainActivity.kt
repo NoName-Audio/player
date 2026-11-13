@@ -7,12 +7,15 @@ import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.provider.OpenableColumns
 import android.provider.Settings
 import android.webkit.JavascriptInterface
 import android.webkit.MimeTypeMap
 import android.webkit.WebView
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.FileProvider
+import org.json.JSONArray
 import java.io.File
 import java.lang.ref.WeakReference
 
@@ -20,6 +23,29 @@ class MainActivity : TauriActivity() {
 
     private var webViewRef: WeakReference<WebView>? = null
     private var multicastLock: WifiManager.MulticastLock? = null
+
+    private val pickFiles = registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        if (uris.isEmpty()) return@registerForActivityResult
+        Thread {
+            val dir = File(cacheDir, "picked/${System.currentTimeMillis()}").apply { mkdirs() }
+            val paths = JSONArray()
+            for (uri in uris) {
+                try {
+                    val name = contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
+                        if (it.moveToFirst()) it.getString(0) else null
+                    } ?: uri.lastPathSegment ?: "file"
+                    val target = File(dir, name.replace(Regex("[\\\\/:*?\"<>|]"), "_"))
+                    contentResolver.openInputStream(uri)?.use { input ->
+                        target.outputStream().use { input.copyTo(it) }
+                    } ?: continue
+                    paths.put(target.absolutePath)
+                } catch (_: Exception) {}
+            }
+            webViewRef?.get()?.post {
+                webViewRef?.get()?.evaluateJavascript("window._onAndroidFilesPicked && window._onAndroidFilesPicked($paths)", null)
+            }
+        }.start()
+    }
 
     companion object {
         var instance: WeakReference<MainActivity>? = null
@@ -99,6 +125,18 @@ class MainActivity : TauriActivity() {
                 } else {
                     startService(intent)
                 }
+            }
+
+            @JavascriptInterface
+            fun pickAudioFiles() {
+                runOnUiThread {
+                    pickFiles.launch(arrayOf("audio/*", "application/ogg", "application/octet-stream"))
+                }
+            }
+
+            @JavascriptInterface
+            fun clearPickedFiles() {
+                File(cacheDir, "picked").deleteRecursively()
             }
 
             /** Called from JS when playback stops entirely. */
