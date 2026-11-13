@@ -369,14 +369,32 @@ fn dedup_track_meta_by_hash(track_meta: Vec<SyncTrackMeta>) -> Vec<SyncTrackMeta
     deduped
 }
 
+// Repair rows, including failed repairs, exclude unverified identities from sync.
+// CUE identities also depend on queued physical rows matching their source.
+macro_rules! verified_track_sql {
+    ($query:literal, $track:literal, $suffix:literal) => {
+        concat!(
+            $query,
+            " AND NOT EXISTS (SELECT 1 FROM physical_hash_repairs repair WHERE repair.track_id = ",
+            $track, ".id)",
+            " AND (COALESCE(", $track, ".source_kind, '') != 'cue' OR NOT EXISTS (",
+            "SELECT 1 FROM physical_hash_repairs repair JOIN tracks physical ON physical.id = repair.track_id ",
+            "WHERE COALESCE(physical.source_kind, '') != 'cue' AND (physical.path = COALESCE(NULLIF(",
+            $track, ".source_path, ''), ", $track, ".path) OR NULLIF(physical.source_path, '') = COALESCE(NULLIF(",
+            $track, ".source_path, ''), ", $track, ".path))))",
+            $suffix
+        )
+    };
+}
+
 fn load_remote_tracks(conn: &Connection) -> Vec<RemoteTrack> {
     let mut tracks: Vec<RemoteTrack> = conn
         .prepare(
-            "SELECT file_hash, path, title, artist, album, source_kind, source_path, cue_path, \
+            verified_track_sql!("SELECT file_hash, path, title, artist, album, source_kind, source_path, cue_path, \
              (SELECT physical.file_hash FROM tracks physical WHERE physical.path = \
               COALESCE(NULLIF(tracks.source_path, ''), tracks.path) \
               AND COALESCE(physical.source_kind, '') != 'cue') \
-             FROM tracks WHERE file_hash IS NOT NULL",
+             FROM tracks WHERE file_hash IS NOT NULL", "tracks", ""),
         )
         .map(|mut s| {
             s.query_map([], |row| {
@@ -403,8 +421,8 @@ fn load_remote_tracks(conn: &Connection) -> Vec<RemoteTrack> {
 
 fn load_sync_track_state_by_hash(conn: &Connection, hash: &str) -> Option<SyncTrackState> {
     conn.query_row(
-        "SELECT is_liked, play_count, rarity, manually_edited
-         FROM tracks WHERE file_hash = ?1 LIMIT 1",
+        verified_track_sql!("SELECT is_liked, play_count, rarity, manually_edited
+         FROM tracks WHERE file_hash = ?1", "tracks", " LIMIT 1"),
         params![hash],
         |row| {
             Ok(SyncTrackState {
@@ -420,8 +438,8 @@ fn load_sync_track_state_by_hash(conn: &Connection, hash: &str) -> Option<SyncTr
 
 fn load_sync_track_fields_by_hash(conn: &Connection, hash: &str) -> Option<SyncTrackFields> {
     conn.query_row(
-        "SELECT title, artist, album, track_number, year, genre, tags, date_added, album_artist, disc_number
-         FROM tracks WHERE file_hash = ?1 LIMIT 1",
+        verified_track_sql!("SELECT title, artist, album, track_number, year, genre, tags, date_added, album_artist, disc_number
+         FROM tracks WHERE file_hash = ?1", "tracks", " LIMIT 1"),
         params![hash],
         |row| {
             Ok(SyncTrackFields {
@@ -443,10 +461,9 @@ fn load_sync_track_fields_by_hash(conn: &Connection, hash: &str) -> Option<SyncT
 
 fn load_sync_track_meta(conn: &Connection) -> Vec<SyncTrackMeta> {
     conn.prepare(
-        "SELECT file_hash, is_liked, play_count, rarity, manually_edited,
+        verified_track_sql!("SELECT file_hash, is_liked, play_count, rarity, manually_edited,
                 title, artist, album, track_number, year, genre, tags, date_added, album_artist, disc_number
-         FROM tracks WHERE file_hash IS NOT NULL
-         ORDER BY file_hash, id",
+         FROM tracks WHERE file_hash IS NOT NULL", "tracks", " ORDER BY file_hash, id"),
     )
     .map(|mut stmt| {
         stmt.query_map([], |row| {
@@ -492,10 +509,9 @@ fn load_sync_playlists(conn: &Connection) -> Vec<SyncPlaylist> {
         .map(|(playlist_id, name)| {
             let track_hashes: Vec<String> = conn
                 .prepare(
-                    "SELECT t.file_hash FROM playlist_tracks pt
+                    verified_track_sql!("SELECT t.file_hash FROM playlist_tracks pt
                      JOIN tracks t ON t.id = pt.track_id
-                     WHERE pt.playlist_id = ?1 AND t.file_hash IS NOT NULL
-                     ORDER BY pt.position, pt.id",
+                     WHERE pt.playlist_id = ?1 AND t.file_hash IS NOT NULL", "t", " ORDER BY pt.position, pt.id"),
                 )
                 .and_then(|mut stmt| {
                     stmt.query_map(params![playlist_id], |row| row.get::<_, String>(0))
@@ -527,11 +543,10 @@ fn load_sync_smart_playlists(conn: &Connection) -> Vec<SyncSmartPlaylist> {
 
 fn load_sync_history(conn: &Connection) -> Vec<SyncHistoryEntry> {
     conn.prepare(
-        "SELECT t.file_hash, ph.played_at
+        verified_track_sql!("SELECT t.file_hash, ph.played_at
          FROM play_history ph
          JOIN tracks t ON t.id = ph.track_id
-         WHERE t.file_hash IS NOT NULL
-         ORDER BY ph.played_at",
+         WHERE t.file_hash IS NOT NULL", "t", " ORDER BY ph.played_at"),
     )
     .map(|mut stmt| {
         stmt.query_map([], |row| {
@@ -702,13 +717,12 @@ fn load_sync_history_chunk_by_id(conn: &Connection, chunk_id: &str) -> Option<Sy
     let max_played_at = min_played_at.saturating_add(PLAY_HISTORY_CHUNK_SECONDS - 1);
     let events: Vec<SyncHistoryEntry> = conn
         .prepare(
-            "SELECT t.file_hash, ph.played_at
+            verified_track_sql!("SELECT t.file_hash, ph.played_at
              FROM play_history ph
              JOIN tracks t ON t.id = ph.track_id
              WHERE t.file_hash IS NOT NULL
                AND ph.played_at >= ?1
-               AND ph.played_at <= ?2
-             ORDER BY ph.played_at, t.file_hash",
+               AND ph.played_at <= ?2", "t", " ORDER BY ph.played_at, t.file_hash"),
         )
         .and_then(|mut stmt| {
             stmt.query_map(params![min_played_at, max_played_at], |row| {
@@ -783,7 +797,7 @@ fn build_sync_merkle_debug(conn: &Connection) -> SyncMerkleDebugResponse {
 
 fn build_local_hash_to_id_map(conn: &Connection) -> HashMap<String, i64> {
     let mut hash_to_id = HashMap::new();
-    if let Ok(mut stmt) = conn.prepare("SELECT file_hash, id FROM tracks WHERE file_hash IS NOT NULL") {
+    if let Ok(mut stmt) = conn.prepare(verified_track_sql!("SELECT file_hash, id FROM tracks WHERE file_hash IS NOT NULL", "tracks", "")) {
         if let Ok(rows) = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))) {
             for row in rows.flatten() {
                 hash_to_id.insert(row.0, row.1);
@@ -1183,7 +1197,7 @@ fn current_playback_info(
         .map(normalize_rel_path);
     let metadata = rel_path.as_ref().and_then(|rel| {
         conn.query_row(
-            "SELECT file_hash, title, artist, album FROM tracks WHERE path = ?1 LIMIT 1",
+            verified_track_sql!("SELECT file_hash, title, artist, album FROM tracks WHERE path = ?1", "tracks", " LIMIT 1"),
             params![rel],
             |row| {
                 Ok((
@@ -1286,7 +1300,7 @@ fn serve_control_play_hash(
         .lock()
         .unwrap()
         .query_row(
-            "SELECT path FROM tracks WHERE file_hash = ?1 LIMIT 1",
+            verified_track_sql!("SELECT path FROM tracks WHERE file_hash = ?1", "tracks", " LIMIT 1"),
             params![payload.hash],
             |row| row.get(0),
         )
@@ -1422,7 +1436,7 @@ fn serve_file(request: tiny_http::Request, hash: &str, conn: &Arc<Mutex<Connecti
         .lock()
         .unwrap()
         .query_row(
-            "SELECT COALESCE(NULLIF(source_path, ''), path) FROM tracks WHERE file_hash = ?1 LIMIT 1",
+            verified_track_sql!("SELECT COALESCE(NULLIF(source_path, ''), path) FROM tracks WHERE file_hash = ?1", "tracks", " LIMIT 1"),
             params![hash],
             |row| row.get(0),
         )
@@ -1439,7 +1453,7 @@ fn serve_file(request: tiny_http::Request, hash: &str, conn: &Arc<Mutex<Connecti
         Ok(data) => {
             let actual = blake3::hash(&data).to_hex().to_string();
             let virtual_source: bool = conn.lock().unwrap().query_row(
-                "SELECT COALESCE(source_kind, '') = 'cue' FROM tracks WHERE file_hash = ?1 LIMIT 1",
+                verified_track_sql!("SELECT COALESCE(source_kind, '') = 'cue' FROM tracks WHERE file_hash = ?1", "tracks", " LIMIT 1"),
                 params![hash], |row| row.get(0)).unwrap_or(false);
             if !virtual_source && actual != hash {
                 let _ = request.respond(tiny_http::Response::empty(409));
@@ -1461,7 +1475,7 @@ fn serve_cue_file(request: tiny_http::Request, hash: &str, conn: &Arc<Mutex<Conn
         .lock()
         .unwrap()
         .query_row(
-            "SELECT cue_path FROM tracks WHERE file_hash = ?1 AND cue_path IS NOT NULL LIMIT 1",
+            verified_track_sql!("SELECT cue_path FROM tracks WHERE file_hash = ?1 AND cue_path IS NOT NULL", "tracks", " LIMIT 1"),
             params![hash],
             |row| row.get(0),
         )
@@ -1802,7 +1816,7 @@ fn emit_download_item(
 
 fn local_hash_exists(conn: &Connection, hash: &str) -> bool {
     conn.query_row(
-        "SELECT 1 FROM tracks WHERE file_hash = ?1 LIMIT 1",
+        verified_track_sql!("SELECT 1 FROM tracks WHERE file_hash = ?1", "tracks", " LIMIT 1"),
         params![hash],
         |_| Ok(()),
     )
@@ -2354,7 +2368,7 @@ fn do_sync(peer_host: String, peer_name: String, peer_addresses: Vec<String>, pe
     let local_hashes: HashSet<String> = {
         let c = conn.lock().unwrap();
         let hashes: HashSet<String> =
-            match c.prepare("SELECT file_hash FROM tracks WHERE file_hash IS NOT NULL") {
+            match c.prepare(verified_track_sql!("SELECT file_hash FROM tracks WHERE file_hash IS NOT NULL", "tracks", "")) {
                 Ok(mut stmt) => stmt
                     .query_map([], |row| row.get::<_, String>(0))
                     .map(|rows| rows.filter_map(|r| r.ok()).collect())
@@ -2873,5 +2887,75 @@ mod registration_tests {
         register_downloaded_hash(&conn, path.parent().unwrap(), &path, &physical).unwrap();
         assert_eq!(conn.lock().unwrap().query_row("SELECT file_hash FROM tracks", [], |r| r.get::<_, String>(0)).unwrap(), physical);
         std::fs::remove_file(path).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod repair_visibility_tests {
+    use super::*;
+
+    fn database() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("
+            CREATE TABLE tracks (
+                id INTEGER PRIMARY KEY, file_hash TEXT, path TEXT, source_kind TEXT,
+                source_path TEXT, cue_path TEXT, title TEXT, artist TEXT, album TEXT,
+                is_liked INTEGER DEFAULT 0, play_count INTEGER DEFAULT 0, rarity TEXT,
+                manually_edited INTEGER DEFAULT 0, track_number INTEGER, year INTEGER,
+                genre TEXT, tags TEXT, date_added INTEGER, album_artist TEXT, disc_number INTEGER
+            );
+            CREATE TABLE physical_hash_repairs (track_id INTEGER PRIMARY KEY, state TEXT);
+            CREATE TABLE playlists (id INTEGER PRIMARY KEY, name TEXT, created_at INTEGER);
+            CREATE TABLE playlist_tracks (id INTEGER PRIMARY KEY, playlist_id INTEGER, track_id INTEGER, position INTEGER);
+            CREATE TABLE play_history (track_id INTEGER, played_at INTEGER);
+            INSERT INTO tracks (id, file_hash, path, source_kind, source_path, cue_path)
+                VALUES (1, 'physical', 'album.flac', NULL, NULL, NULL),
+                       (2, 'segment', 'album.cue#1', 'cue', 'album.flac', 'album.cue'),
+                       (3, 'other', 'other.flac', NULL, NULL, NULL);
+            INSERT INTO playlists VALUES (1, 'Playlist', 0);
+            INSERT INTO playlist_tracks VALUES (1, 1, 1, 0), (2, 1, 2, 1), (3, 1, 3, 2);
+            INSERT INTO play_history VALUES (1, 1), (2, 2), (3, 3);
+        ").unwrap();
+        conn
+    }
+
+    fn assert_hidden(conn: &Connection, hash: &str) {
+        assert!(!load_remote_tracks(conn).iter().any(|track| track.hash == hash));
+        assert!(!load_sync_track_meta(conn).iter().any(|track| track.hash == hash));
+        assert!(load_sync_track_state_by_hash(conn, hash).is_none());
+        assert!(load_sync_track_fields_by_hash(conn, hash).is_none());
+        assert!(!build_local_hash_to_id_map(conn).contains_key(hash));
+        assert!(!local_hash_exists(conn, hash));
+        assert!(!load_sync_playlists(conn)[0].track_hashes.iter().any(|value| value == hash));
+        assert!(!load_sync_history(conn).iter().any(|entry| entry.hash == hash));
+        assert!(!load_sync_history_chunk_by_id(conn, "0").unwrap().events.iter().any(|entry| entry.hash == hash));
+    }
+
+    #[test]
+    fn pending_and_failed_repairs_hide_physical_and_dependent_cue_identities() {
+        for state in ["pending", "failed"] {
+            let conn = database();
+            conn.execute("INSERT INTO physical_hash_repairs VALUES (1, ?1)", params![state]).unwrap();
+            assert_hidden(&conn, "physical");
+            assert_hidden(&conn, "segment");
+            assert!(local_hash_exists(&conn, "other"));
+            conn.execute("DELETE FROM physical_hash_repairs", []).unwrap();
+            assert!(local_hash_exists(&conn, "physical"));
+            assert!(local_hash_exists(&conn, "segment"));
+            assert_eq!(load_remote_tracks(&conn).len(), 3);
+        }
+    }
+
+    #[test]
+    fn cue_own_repair_and_physical_source_alias_each_block_identity() {
+        let conn = database();
+        conn.execute("INSERT INTO physical_hash_repairs VALUES (2, 'failed')", []).unwrap();
+        assert_hidden(&conn, "segment");
+        assert!(local_hash_exists(&conn, "physical"));
+        conn.execute("DELETE FROM physical_hash_repairs", []).unwrap();
+        conn.execute("UPDATE tracks SET path = 'renamed.flac', source_path = 'album.flac' WHERE id = 1", []).unwrap();
+        conn.execute("INSERT INTO physical_hash_repairs VALUES (1, 'pending')", []).unwrap();
+        assert_hidden(&conn, "segment");
+        assert!(local_hash_exists(&conn, "other"));
     }
 }
