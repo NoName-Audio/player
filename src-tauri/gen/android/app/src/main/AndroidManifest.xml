@@ -48,7 +48,7 @@
         </provider>
 
         <provider
-            android:name="androidx.core.content.FileProvider"
+            android:name=".CatalogApkFileProvider"
             android:authorities="${applicationId}.catalog-apks"
             android:exported="false"
             android:grantUriPermissions="true">

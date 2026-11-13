@@ -14,8 +14,10 @@ import app.tauri.plugin.JSObject
 import java.io.File
 import java.net.URL
 import java.util.concurrent.Executors
-import java.util.concurrent.atomic.AtomicBoolean
 import javax.net.ssl.HttpsURLConnection
+
+/** A distinct component prevents Android from reusing the general file provider instance. */
+class CatalogApkFileProvider : FileProvider()
 
 /** Downloads are private and never executed; only Android's package installer installs APKs. */
 internal class CatalogApkInstaller(
@@ -24,7 +26,7 @@ internal class CatalogApkInstaller(
     private val launch: (Invoke, Intent, String) -> Unit,
 ) {
     companion object {
-        private val busy = AtomicBoolean(false)
+        private val busy = ApkInstallGate.busy
         private val downloads = Executors.newSingleThreadExecutor()
         private const val LIMIT = 64L * 1024 * 1024
     }

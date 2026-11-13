@@ -2,6 +2,7 @@
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from "vue";
 import ArtistLink from "./components/ArtistLink.vue";
 import { PLAYBACK_SESSION_KEY, readPlaybackContext, matchesPlaybackContext, type SavedPlaybackContext } from './utils/playbackSession';
+import { usePlaybackProgress } from './composables/usePlaybackProgress';
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
@@ -50,7 +51,7 @@ import PluginSearch from './plugins/components/PluginSearch.vue';
 import SettingsView from "./components/SettingsView.vue";
 import AboutPanel from "./components/AboutPanel.vue";
 import { useAppearance } from "./composables/useAppearance";
-import { SETTINGS_SECTIONS, SETTINGS_SUBSECTIONS, type SettingsSection, type DeviceSettings, type AboutInfo, type AboutUpdateStatus } from "./types/settings";
+import { SETTINGS_SECTIONS, SETTINGS_SUBSECTIONS, type SettingsSection, type DeviceSettings, type AboutInfo, type AboutUpdateStatus, type AndroidUpdateStatus } from "./types/settings";
 import ArtistView from "./components/ArtistView.vue";
 import AlbumView from "./components/AlbumView.vue";
 import TrackRow from "./components/TrackRow.vue";
@@ -480,6 +481,47 @@ const aboutUpdateDone = ref('');
 const aboutUpdateProgress = ref<number | null>(null);
 const aboutDesktopUpdateReady = ref(false);
 let pendingDesktopUpdate: Update | null = null;
+const aboutAndroidUpdate = ref<AndroidUpdateStatus | null>(null);
+let aboutUpdatePollTimer: ReturnType<typeof setTimeout> | null = null;
+let aboutUpdatePollPending = false;
+let aboutUpdateDisposed = false;
+let aboutUpdateStarting = false;
+
+function applyAndroidUpdateStatus(status: AndroidUpdateStatus) {
+  aboutAndroidUpdate.value = status;
+  aboutUpdating.value = ['downloading', 'verifying', 'permission', 'installing'].includes(status.status);
+  aboutUpdateProgress.value = status.status === 'downloading' && status.total > 0
+    ? Math.min(100, Math.floor(status.downloaded / status.total * 100)) : null;
+  if (status.status !== 'idle') aboutUpdateError.value = status.status === 'error' ? (status.error || 'Update failed') : '';
+  aboutUpdateDone.value = status.status === 'cancelled' ? 'Update cancelled.' : '';
+}
+
+async function refreshAndroidUpdateStatus() {
+  if (aboutUpdateDisposed || aboutUpdatePollPending || aboutInfo.value?.platform !== 'android') return;
+  if (aboutUpdatePollTimer) clearTimeout(aboutUpdatePollTimer);
+  aboutUpdatePollTimer = null;
+  aboutUpdatePollPending = true;
+  try {
+    const status = await invoke<AndroidUpdateStatus>('about_update_status');
+    if (!aboutUpdateDisposed) applyAndroidUpdateStatus(status);
+  } catch (error) {
+    aboutUpdateError.value = String(error ?? 'Failed to read update status');
+  } finally {
+    aboutUpdatePollPending = false;
+    if (!aboutUpdateDisposed && aboutUpdating.value) {
+      aboutUpdatePollTimer = setTimeout(() => { void refreshAndroidUpdateStatus(); }, 500);
+    }
+  }
+}
+
+async function cancelAboutUpdate() {
+  try {
+    applyAndroidUpdateStatus(await invoke<AndroidUpdateStatus>('about_update_cancel'));
+  } catch (error) {
+    aboutUpdateError.value = String(error ?? 'Failed to cancel update');
+  }
+  void refreshAndroidUpdateStatus();
+}
 
 const supportsTauriUpdater = computed(() => (
   aboutInfo.value !== null
@@ -1935,8 +1977,13 @@ watch([spectrumActive, () => nowPlaying.value?.id, seekPreviewPos], () => {
 }, { flush: 'sync' });
 // ────────────────────────────────────────────────────────────────────────────
 
+const { renderedPosition, reconcile: reconcileProgress } = usePlaybackProgress({
+  position: currentTime, duration, playing: isPlaying, preview: seekPreviewPos, reducedMotion,
+  identity: () => `${remoteOutputPeer.value?.name ?? 'local'}:${nowPlaying.value?.id ?? ''}`,
+});
+
 const displayProgressPercent = computed(() => {
-  const pos = seekPreviewPos.value ?? currentTime.value;
+  const pos = seekPreviewPos.value ?? renderedPosition.value;
   return duration.value > 0 ? Math.max(0, Math.min(100, (pos / duration.value) * 100)) : 0;
 });
 
@@ -2525,6 +2572,7 @@ function applyRemotePlaybackStatus(status: RemoteDeviceStatus): PlaybackStatus {
   }
   isPlaying.value = playback?.state === 'playing';
   if (seekPreviewPos.value === null) currentTime.value = Math.floor(playback?.position ?? 0);
+  reconcileProgress(playback?.position ?? 0, isPlaying.value);
   if ((playback?.duration ?? 0) > 0) {
     duration.value = Math.floor(playback?.duration ?? 0);
   }
@@ -2562,11 +2610,22 @@ async function capturePlaybackSnapshot() {
 }
 
 async function refreshPlaybackState() {
+  const sequence = playbackTransitionSequence;
+  const seekSequence = seekRequestSequence;
+  const output = remoteOutputPeer.value;
+  const request = ++playbackStatusRequest;
+  const stale = () => sequence !== playbackTransitionSequence || seekSequence !== seekRequestSequence
+    || output !== remoteOutputPeer.value || request < appliedPlaybackStatusRequest;
+  const snapshot = (): PlaybackStatus => ({ playing: isPlaying.value, finished: false, position: currentTime.value, duration: duration.value });
   if (remoteOutputPeer.value) {
     const st = await invoke<RemoteDeviceStatus>('remote_playback_status', remotePeerArgs(remoteOutputPeer.value));
+    if (stale()) return snapshot();
+    appliedPlaybackStatusRequest = request;
     return applyRemotePlaybackStatus(st);
   }
   const st = await invoke<PlaybackStatus>('playback_status');
+  if (stale()) return snapshot();
+  appliedPlaybackStatusRequest = request;
   nativePlaybackSourceId.value = st.source_id ?? null;
   const currentTrack = nowPlaying.value;
   const metadataDuration = Math.floor(currentTrack?.duration_secs ?? 0);
@@ -2579,8 +2638,12 @@ async function refreshPlaybackState() {
   } else if (reportedDuration > 0) {
     duration.value = reportedDuration;
   }
+  reconcileProgress(st.position, st.playing);
   return st;
 }
+
+let playbackStatusRequest = 0;
+let appliedPlaybackStatusRequest = 0;
 
 let ticker: ReturnType<typeof setInterval> | null = null;
 let androidSyncCounter = 0;
@@ -3161,6 +3224,7 @@ async function loadAbout(force = false) {
   aboutError.value = '';
   try {
     aboutInfo.value = await invoke<AboutInfo>('about_info');
+    if (aboutInfo.value.platform === 'android') await refreshAndroidUpdateStatus();
   } catch (error) {
     aboutError.value = String(error ?? 'Failed to load About data');
   } finally {
@@ -3238,6 +3302,7 @@ async function openAboutDownloadLink() {
 }
 
 async function doAboutUpdate() {
+  if (aboutUpdating.value || aboutUpdateStarting) return;
   if (supportsTauriUpdater.value) {
     const update = pendingDesktopUpdate;
     if (!update) {
@@ -3283,6 +3348,24 @@ async function doAboutUpdate() {
   const assetUrl = aboutUpdateStatus.value?.asset_url;
   if (!assetUrl) {
     await openAboutDownloadLink();
+    return;
+  }
+  if (aboutInfo.value?.platform === 'android') {
+    aboutUpdateStarting = true;
+    try {
+      await refreshAndroidUpdateStatus();
+      if (aboutUpdating.value) return;
+      aboutUpdating.value = true;
+      aboutUpdateError.value = '';
+      aboutUpdateDone.value = '';
+      await invoke<string>('about_do_update', { assetUrl });
+    } catch (error) {
+      aboutUpdateError.value = String(error ?? 'Update failed');
+      aboutUpdating.value = false;
+    } finally {
+      aboutUpdateStarting = false;
+      await refreshAndroidUpdateStatus();
+    }
     return;
   }
   aboutUpdating.value = true;
@@ -3723,6 +3806,7 @@ const pageTitle = computed(() => {
 const pageSubtitle = computed(() => undefined);
 
 onMounted(() => {
+  void loadAbout();
   document.addEventListener('click', onDocClick);
   document.addEventListener('keydown', onKeyDown);
   window.addEventListener('focus', onWindowFocus);
@@ -3957,6 +4041,8 @@ onMounted(() => {
   listen<IdentifyProgress>('identify-progress', event => handleIdentifyProgress(event.payload));
 });
 onUnmounted(() => {
+  aboutUpdateDisposed = true;
+  if (aboutUpdatePollTimer) clearTimeout(aboutUpdatePollTimer);
   playbackRestoreDisposed = true;
   cancelSeekGesture();
   document.documentElement.classList.remove('player-reduced-motion', 'player-no-rarity-motion');
@@ -4760,6 +4846,7 @@ onUnmounted(() => {
               <AboutPanel :info="aboutInfo" :loading="aboutLoading" :error="aboutError" :status="aboutUpdateStatus"
                 :checking="aboutCheckingUpdates" :updating="aboutUpdating" :progress="aboutUpdateProgress"
                 :desktop-ready="aboutDesktopUpdateReady" :update-error="aboutUpdateError" :update-done="aboutUpdateDone"
+                :android-update="aboutAndroidUpdate" @cancel-update="cancelAboutUpdate"
                 @check="checkAboutUpdates" @update="doAboutUpdate" @open-release="openAboutDownloadLink"
                 @open-repository="openUrl('https://github.com/' + (aboutInfo?.release_repo || 'NoName-Audio/player'))"
                 @retry="loadAbout(true)" @open-external="openUrl" />

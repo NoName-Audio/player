@@ -177,6 +177,7 @@ These screenshots were captured with the built-in demo mode. Click any image to 
 - Dark and light themes (or following the system) with a choice of accent color and header gradient.
 - Settings page for library tools, audio output, device identity and sync, Soulseek, and appearance (theme, accent color, gradient, tint, reduced motion).
 - Appearance includes independent **Footer live spectrum** and **Seek waveform** switches, both on by default and saved on this device. Disabling seek waveforms keeps ordinary played/unplayed seek progress and background waveform caching; reduced motion only pauses live/decorative visuals, not static seek waveforms.
+- Seek progress moves smoothly between playback status updates without extra backend polling; pausing freezes it and seeking jumps directly to the selected position.
 - Optional Discord Rich Presence on desktop, off by default.
 - About section with version info, update checks, an embedded changelog, contributors, and third-party licenses.
 - Demo mode with a seeded library (`--demo`), used for the screenshots above.
@@ -186,8 +187,24 @@ These screenshots were captured with the built-in demo mode. Click any image to 
 
 Windows, macOS, and Linux releases use the signed Tauri Updater flow. Release builds publish
 platform updater bundles, their `.sig` files, and a generated `latest.json` manifest to GitHub
-Releases. Android keeps the release-page/APK fallback because the official Tauri updater does
-not install mobile packages.
+Releases. Android uses its native APK updater instead of the desktop Tauri updater.
+In About, **Update now** downloads the APK with actual byte progress, verifies it, and opens
+Android's package installer. If Android requests permission to install unknown apps, allow
+Player and return to the app; installation resumes automatically. Downloading, verification,
+permission, and installer hand-off are distinct states, not confirmation that an update was
+installed. You can cancel a pending update or retry after an error. Returning to About or
+recreating the screen restores the native update status without starting another download.
+The release-page link remains available for manual downloads.
+Only the latest stable official universal APK is accepted. Player streams it into private
+cache, checks that its application ID matches, its Android version code is newer, and
+its cryptographically verified signing certificates match the installed app before
+opening the installer. Differently signed local/debug builds cannot update to a release
+signed with another key. Partial and failed downloads are removed; Android may terminate
+Player during replacement, so reopen it to confirm the new version.
+
+APK plugins use a separate restricted FileProvider component from the general file-sharing
+provider. This prevents Android from reusing the wrong provider for the catalog authority,
+which can otherwise make the package installer report a package parsing error.
 
 The updater public key is committed in `src-tauri/tauri.conf.json`. Keep the matching private
 key outside the repository and back it up: losing it prevents shipping updates to existing
@@ -320,9 +337,16 @@ in sync. Run this command rather than bare `tauri icon`, which overwrites these
 Android corrections. The Android project must already exist.
 
 Android launchers can still impose their own opaque backing, shadows, and mask;
-transparent resources cannot force a transparent launcher presentation. Circle
-and rounded-square previews can check artwork fit, but are not a substitute for
-checking the installed icon on a real launcher.
+transparent resources cannot force a transparent launcher presentation. In
+particular, Android's `AdaptiveIconDrawable` composites its layers over black,
+so a transparent adaptive background is not a promise of wallpaper showing
+through. A launcher's gray backing is not necessarily gray pixels in this logo.
+Replacing adaptive resources with legacy bitmaps would lose adaptive behavior
+and can still trigger launcher-added backing; the generator deliberately keeps
+adaptive support and the safe-zone padding. Circle and rounded-square previews
+can check artwork fit, but are not a substitute for checking the installed icon
+on a real launcher. See the [platform adaptive-icon implementation](https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/graphics/java/android/graphics/drawable/AdaptiveIconDrawable.java)
+and [device mask guidance](https://source.android.com/docs/core/display/adaptive-icons).
 
 ### Profile library indexing with Tracy
 
@@ -364,6 +388,16 @@ or sent when downloading avatars.
 pnpm android:build
 pnpm android:build-deploy
 ```
+Native updater regression tests live in `SelfUpdaterTest`. Run them on an isolated emulator,
+not a production device: the permission test opens Android settings and the package installer.
+Pass instrumentation arguments `compatibleApk` and `foreignApk` pointing to readable test APKs
+with application ID `dev.verncat.player` and a version code newer than the installed debug app.
+Sign the former with the installed debug key and the latter with a different key. Set the
+emulator's `REQUEST_INSTALL_PACKAGES` app-op to `deny` before the run; the permission-resume test
+changes it to `allow` and exercises real content-URI hand-off without accepting installation.
+The tests also reject malformed, same-version, wrong-package, wrong-signer and tampered APKs.
+Run `ApkPluginsTest#catalogApkProviderResolvesAndStreamsPrivateDownload` alongside them for the
+catalog-provider authority/streaming regression.
 
 ## Repository notes
 
