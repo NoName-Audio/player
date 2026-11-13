@@ -34,7 +34,13 @@ class MainActivity : TauriActivity() {
                     val name = contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
                         if (it.moveToFirst()) it.getString(0) else null
                     } ?: uri.lastPathSegment ?: "file"
-                    val target = File(dir, name.replace(Regex("[\\\\/:*?\"<>|]"), "_"))
+                    val safeName = name.replace(Regex("[\\\\/:*?\"<>|]"), "_")
+                    var target = File(dir, safeName)
+                    var duplicate = 0
+                    while (target.exists()) {
+                        duplicate++
+                        target = File(File(dir, duplicate.toString()).apply { mkdirs() }, safeName)
+                    }
                     contentResolver.openInputStream(uri)?.use { input ->
                         target.outputStream().use { input.copyTo(it) }
                     } ?: continue

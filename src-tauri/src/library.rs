@@ -2580,6 +2580,18 @@ fn cue_virtual_path(cue_rel: &str, track_number: i64) -> String {
     format!("{cue_rel}#{track_number:02}")
 }
 
+pub(crate) fn cue_audio_files(cue_abs: &Path) -> Vec<PathBuf> {
+    parse_cue_sheet(cue_abs)
+        .map(|sheet| {
+            sheet
+                .files
+                .iter()
+                .map(|file| resolve_cue_audio_path(cue_abs, &file.filename))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn resolve_cue_audio_path(cue_abs: &Path, filename: &str) -> PathBuf {
     let normalized = filename.replace('\\', "/");
     cue_abs
@@ -2597,7 +2609,7 @@ fn resolve_cue_audio_path(cue_abs: &Path, filename: &str) -> PathBuf {
         fields(file = %cue_abs.display())
     )
 )]
-fn index_cue_file(
+pub(crate) fn index_cue_file(
     conn: &Connection,
     data_dir: &Path,
     cue_abs: &Path,
