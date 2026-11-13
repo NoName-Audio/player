@@ -1823,19 +1823,56 @@ fn local_hash_exists(conn: &Connection, hash: &str) -> bool {
     .is_ok()
 }
 
-fn claim_in_flight_hash(app: &AppHandle, conn: &Arc<Mutex<Connection>>, hash: &str) -> bool {
+// Export eligibility is not local absence. A quarantined identity cannot prove
+// presence, but its source must finish repair before we schedule that source.
+// Scope uncertainty by source path (including filename after peer reorganization)
+// or a verified physical source identity, never by a poisoned legacy hash alone.
+fn incoming_track_missing(conn: &Connection, track: &RemoteTrack) -> bool {
+    if local_hash_exists(conn, &track.hash) {
+        return false;
+    }
+    let source = track.source_path.as_deref().filter(|path| !path.is_empty())
+        .unwrap_or(&track.path).replace('\\', "/");
+    let filename = source.rsplit('/').next().unwrap_or(&source);
+    let mut stmt = conn.prepare(
+        "SELECT COALESCE(NULLIF(t.source_path, ''), t.path) FROM tracks t
+         JOIN physical_hash_repairs r ON r.track_id = t.id"
+    ).expect("prepare local repair sources");
+    let sources = stmt.query_map([], |row| row.get::<_, String>(0))
+        .expect("query local repair sources");
+    for local in sources {
+        let local = local.expect("read local repair source").replace('\\', "/");
+        if !filename.is_empty() && (local == source || local.rsplit('/').next() == Some(filename)) {
+            return false;
+        }
+        if let Some(hash) = track.source_hash.as_deref() {
+            let same_source = conn.query_row(
+                verified_track_sql!("SELECT 1 FROM tracks WHERE file_hash = ?1
+                    AND COALESCE(source_kind, '') != 'cue'
+                    AND (path = ?2 OR source_path = ?2)", "tracks", " LIMIT 1"),
+                params![hash, local], |_| Ok(()),
+            ).is_ok();
+            if same_source {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+fn claim_in_flight_hash(app: &AppHandle, conn: &Arc<Mutex<Connection>>, track: &RemoteTrack) -> bool {
     let c = conn.lock().unwrap();
-    if local_hash_exists(&c, hash) {
+    if !incoming_track_missing(&c, track) {
         return false;
     }
 
     let sync = app.state::<SyncState>();
     let mut inner = sync.inner.lock().unwrap();
-    if inner.in_flight_hashes.contains(hash) {
+    if inner.in_flight_hashes.contains(&track.hash) {
         return false;
     }
 
-    inner.in_flight_hashes.insert(hash.to_string());
+    inner.in_flight_hashes.insert(track.hash.clone());
     true
 }
 
@@ -2365,24 +2402,14 @@ fn do_sync(peer_host: String, peer_name: String, peer_addresses: Vec<String>, pe
         .data_dir()
         .to_path_buf();
 
-    let local_hashes: HashSet<String> = {
+    // Repaired hashes prove presence; relevant unresolved sources defer transfer.
+    // Keep this predicate identical to the download-time reservation guard.
+    let missing: Vec<RemoteTrack> = {
         let c = conn.lock().unwrap();
-        let hashes: HashSet<String> =
-            match c.prepare(verified_track_sql!("SELECT file_hash FROM tracks WHERE file_hash IS NOT NULL", "tracks", "")) {
-                Ok(mut stmt) => stmt
-                    .query_map([], |row| row.get::<_, String>(0))
-                    .map(|rows| rows.filter_map(|r| r.ok()).collect())
-                    .unwrap_or_default(),
-                Err(_) => HashSet::new(),
-            };
-        hashes
+        remote_tracks.into_iter()
+            .filter(|track| incoming_track_missing(&c, track))
+            .collect()
     };
-
-    // Tracks the peer has that we don't (identified solely by hash)
-    let missing: Vec<RemoteTrack> = remote_tracks
-        .into_iter()
-        .filter(|t| !local_hashes.contains(&t.hash))
-        .collect();
 
     let total = missing.len();
     if total > 0 {
@@ -2496,8 +2523,10 @@ fn do_sync(peer_host: String, peer_name: String, peer_addresses: Vec<String>, pe
 
         // Recheck the DB at download time and reserve this hash across
         // concurrent sync workers so two peers can't fetch the same track.
-        if !claim_in_flight_hash(&app, &conn, &track.hash) {
-            download_cue_file_for_track(&client, &base_urls, track, &save_dir, &mut downloaded_cues);
+        if !claim_in_flight_hash(&app, &conn, track) {
+            if local_hash_exists(&conn.lock().unwrap(), &track.hash) {
+                download_cue_file_for_track(&client, &base_urls, track, &save_dir, &mut downloaded_cues);
+            }
             done += 1;
             let label = track.title.as_deref()
                 .filter(|t| !t.is_empty())
@@ -2957,5 +2986,74 @@ mod repair_visibility_tests {
         conn.execute("INSERT INTO physical_hash_repairs VALUES (1, 'pending')", []).unwrap();
         assert_hidden(&conn, "segment");
         assert!(local_hash_exists(&conn, "other"));
+    }
+}
+
+#[cfg(test)]
+mod incoming_presence_tests {
+    use super::*;
+
+    fn database() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE tracks (id INTEGER PRIMARY KEY, file_hash TEXT, path TEXT, source_kind TEXT, source_path TEXT);
+            CREATE TABLE physical_hash_repairs (track_id INTEGER PRIMARY KEY, state TEXT);
+            INSERT INTO tracks VALUES (1, 'poisoned', 'artist/album.flac', NULL, NULL);").unwrap();
+        conn
+    }
+
+    fn track(hash: &str, path: &str) -> RemoteTrack {
+        RemoteTrack { hash: hash.into(), path: path.into(), title: None, artist: None,
+            album: None, source_kind: None, source_path: None, cue_path: None,
+            source_hash: None, file_size: None }
+    }
+
+    #[test]
+    fn quarantined_source_defers_without_trusting_legacy_hash() {
+        for state in ["pending", "failed"] {
+            let conn = database();
+            conn.execute("INSERT INTO physical_hash_repairs VALUES (1, ?1)", [state]).unwrap();
+            assert!(!incoming_track_missing(&conn, &track("correct", "peer/album.flac")));
+            assert!(incoming_track_missing(&conn, &track("poisoned", "different.flac")));
+            assert!(!local_hash_exists(&conn, "poisoned"));
+        }
+    }
+
+    #[test]
+    fn repaired_presence_and_genuine_absence_are_distinguished() {
+        let conn = database();
+        conn.execute("INSERT INTO physical_hash_repairs VALUES (1, 'pending')", []).unwrap();
+        let present = track("correct", "album.flac");
+        let absent = track("absent", "album.flac");
+        assert!(!incoming_track_missing(&conn, &present));
+        assert!(!incoming_track_missing(&conn, &absent));
+        conn.execute_batch("UPDATE tracks SET file_hash = 'correct'; DELETE FROM physical_hash_repairs;").unwrap();
+        assert!(!incoming_track_missing(&conn, &present));
+        assert!(incoming_track_missing(&conn, &absent));
+    }
+
+    #[test]
+    fn unrelated_failed_malformed_source_does_not_block_downloads() {
+        let conn = database();
+        conn.execute_batch("UPDATE tracks SET path = 'malformed/'; INSERT INTO physical_hash_repairs VALUES (1, 'failed');").unwrap();
+        assert!(incoming_track_missing(&conn, &track("new", "new.flac")));
+    }
+
+    #[test]
+    fn cue_repair_defers_by_source_path_or_verified_source_hash() {
+        let conn = database();
+        conn.execute_batch("UPDATE tracks SET file_hash = 'physical';
+            INSERT INTO tracks VALUES (2, 'legacy-segment', 'album.cue#1', 'cue', 'artist/album.flac');
+            INSERT INTO physical_hash_repairs VALUES (2, 'pending');").unwrap();
+        let mut cue = track("segment", "peer.cue#1");
+        cue.source_kind = Some("cue".into());
+        cue.source_path = Some("album.flac".into());
+        assert!(!incoming_track_missing(&conn, &cue));
+        cue.source_path = Some("renamed.flac".into());
+        cue.source_hash = Some("physical".into());
+        assert!(!incoming_track_missing(&conn, &cue));
+        conn.execute_batch("UPDATE tracks SET file_hash = 'segment' WHERE id = 2; DELETE FROM physical_hash_repairs;").unwrap();
+        assert!(!incoming_track_missing(&conn, &cue));
+        cue.hash = "absent-segment".into();
+        assert!(incoming_track_missing(&conn, &cue));
     }
 }
