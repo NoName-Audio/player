@@ -2101,7 +2101,7 @@ fn remove_stale_tracks_with_same_hash(
 }
 
 /// Returns the path relative to `data_dir` with forward-slash separators.
-fn rel_path(data_dir: &Path, abs: &Path) -> String {
+pub(crate) fn rel_path(data_dir: &Path, abs: &Path) -> String {
     abs.strip_prefix(data_dir)
         .map(|p| p.to_string_lossy().replace('\\', "/"))
         .unwrap_or_else(|_| abs.to_string_lossy().to_string())

@@ -7,6 +7,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { relaunch } from "@tauri-apps/plugin-process";
+import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import {
   TRACK_RARITY_OPTIONS,
@@ -3408,6 +3409,89 @@ async function followEditedTrackFromAlbumPage(before: Track, after: Track) {
 // Leaving the album artist field empty means the track artist.
 const albumArtistPlaceholder = computed(() => editForm.value.artist || 'Same as artist');
 
+let pendingImportPlaylistId: number | null = null;
+const addSongsOpen = ref(false);
+const addSongsQuery = ref('');
+const addSongsResults = ref<Track[]>([]);
+const addSongsSelected = ref<number[]>([]);
+const addSongsBusy = ref(false);
+
+async function loadAddSongs() {
+  const page = await invoke<TrackPage>('get_tracks_page', {
+    query: addSongsQuery.value.trim() || null,
+    limit: 100,
+    offset: 0,
+    includeDuplicates: showDuplicateTracks.value,
+  });
+  addSongsResults.value = page.tracks;
+}
+
+function openAddSongs() {
+  addSongsQuery.value = '';
+  addSongsSelected.value = [];
+  addSongsOpen.value = true;
+  void loadAddSongs();
+}
+
+watch(addSongsQuery, () => { if (addSongsOpen.value) void loadAddSongs(); });
+
+async function saveAddSongs() {
+  const view = playlistView.value;
+  if (!view) return;
+  addSongsBusy.value = true;
+  try {
+    const existing = new Set(view.tracks.map(t => t.id));
+    for (const trackId of addSongsSelected.value) {
+      if (!existing.has(trackId)) await invoke('add_track_to_playlist', { playlistId: view.id, trackId });
+    }
+    await loadPlaylists();
+    await loadPlaylistPage(view.id, view.name);
+    addSongsOpen.value = false;
+  } catch (error) {
+    console.error('Failed to add songs to playlist:', error);
+  } finally {
+    addSongsBusy.value = false;
+  }
+}
+
+function uploadFilesToPlaylist(playlistId: number) {
+  uploadFiles();
+  pendingImportPlaylistId = playlistId;
+}
+
+async function uploadFiles() {
+  pendingImportPlaylistId = null;
+  const bridge = (window as any).AndroidBridge;
+  if (bridge?.pickAudioFiles) {
+    bridge.pickAudioFiles();
+    return;
+  }
+  const picked = await openFileDialog({
+    multiple: true,
+    filters: [{ name: 'Music', extensions: ['mp3', 'flac', 'ogg', 'opus', 'aac', 'm4a', 'wav', 'wv', 'ape'] }],
+  });
+  if (picked?.length) await importPickedPaths(picked);
+}
+
+async function importPickedPaths(paths: string[]) {
+  const playlistId = pendingImportPlaylistId;
+  pendingImportPlaylistId = null;
+  try {
+    const result = await invoke<{ imported: number; skipped: number; importedTrackIds: number[] }>('import_dropped_files', { paths });
+    if (playlistId !== null) {
+      for (const trackId of result.importedTrackIds) {
+        await invoke('add_track_to_playlist', { playlistId, trackId });
+      }
+      await loadPlaylists();
+      if (playlistView.value?.id === playlistId) await loadPlaylistPage(playlistId, playlistView.value.name);
+    }
+  } catch (error) {
+    console.error('Failed to import picked files:', error);
+  } finally {
+    (window as any).AndroidBridge?.clearPickedFiles?.();
+  }
+}
+
 async function openDataDir() {
   const path = await invoke<string>('get_data_dir');
   // On Android, use the native JavascriptInterface bridge that calls
@@ -3805,6 +3889,7 @@ onMounted(() => {
     nextTick(() => { if (indexLogRef.value) indexLogRef.value.scrollTop = indexLogRef.value.scrollHeight; });
   });
 
+  (window as any)._onAndroidFilesPicked = importPickedPaths;
   // Android media controls: _mediaControl is called by the native notification buttons
   (window as any)._mediaControl = async (action: string) => {
     if (action === 'toggle')     { await toggleFromMediaControl(); }
@@ -3883,6 +3968,7 @@ onUnmounted(() => {
   window.removeEventListener('focus', onWindowFocus);
   document.removeEventListener('visibilitychange', onDocumentVisibilityChange);
   delete (window as any)._playbackFinished;
+  delete (window as any)._onAndroidFilesPicked;
   clearTrackLongPress();
   clearHomePinnedLongPress();
   if (libraryFilterTimer) clearTimeout(libraryFilterTimer);
@@ -3950,6 +4036,7 @@ onUnmounted(() => {
           <section>
             <div class="section-head">
               <h2>{{ !libraryLoading && libraryTotal === 0 ? 'Get started' : 'Recently played' }}</h2>
+              <button v-if="libraryTotal > 0" class="control-button playlist-action" @click="uploadFiles"><AppIcon name="folder" /> Add files</button>
               <a class="show-all" href="#" @click.prevent="activeNav = 'history'; loadHistory()">Show all</a>
             </div>
             <div v-if="libraryLoading" class="library-empty">Loading…</div>
@@ -3969,7 +4056,7 @@ onUnmounted(() => {
                 <div class="card-artist">From another device</div>
               </button>
 
-              <button type="button" class="card onboarding-music-card" @click="openDataDir">
+              <button type="button" class="card onboarding-music-card" @click="uploadFiles">
                 <div class="cover onboarding-action-cover onboarding-upload-cover">
                   <AppIcon name="folder" />
                   <span class="hover-play">
@@ -3977,7 +4064,7 @@ onUnmounted(() => {
                   </span>
                 </div>
                 <div class="card-title">Upload</div>
-                <div class="card-artist">From a folder on disk</div>
+                <div class="card-artist">Pick files from your device</div>
               </button>
 
               <div class="recent-onboarding-guide" aria-hidden="true">
@@ -4093,6 +4180,7 @@ onUnmounted(() => {
                 type="text"
                 placeholder="Filter tracks..."
               />
+              <button class="control-button playlist-action" @click="uploadFiles"><AppIcon name="folder" /> Add files</button>
             </div>
 
             <div v-if="libraryLoading" class="library-empty">Loading…</div>
@@ -4235,7 +4323,9 @@ onUnmounted(() => {
             <template v-if="playlistTab === 'regular'">
               <!-- Playlist detail -->
               <template v-if="playlistView">
-                <div v-if="playlistView.tracks.length" class="library-header" style="justify-content:flex-end;">
+                <div class="library-header" style="justify-content:flex-end; flex-wrap:wrap;">
+                  <button class="control-button playlist-action" @click="openAddSongs"><AppIcon name="add-to-playlist" /> Add songs</button>
+                  <button class="control-button playlist-action" @click="uploadFilesToPlaylist(playlistView.id)"><AppIcon name="folder" /> Import files to this playlist</button>
                   <button v-if="playlistView.tracks.length" class="control-button control-button-primary playlist-action" @click="playRegularPlaylistTrack(0)"><AppIcon name="play" /> Play</button>
                 </div>
                 <div v-if="playlistView.tracks.length === 0" class="library-empty">No tracks yet. Right-click any track to add.</div>
@@ -4648,7 +4738,7 @@ onUnmounted(() => {
             :sync-enabled="syncEnabled" :sync-busy="syncBusy" :sync-error="syncError" :sync-active="syncActive" :peers-count="peers.length"
             :update-available="hasAvailableUpdate"
             :cover-url="currentCoverUrl" :cover-colors="currentTrack.colors"
-            @navigate="openSettings" @open-folder="openSettingsFolder" @reindex="doReindex" @identify="identifyFromSettings"
+            @navigate="openSettings" @open-folder="openSettingsFolder" @upload-files="uploadFiles" @reindex="doReindex" @identify="identifyFromSettings"
             @duplicates="activeNav = 'dedup'; openDedup()" @devices="activeNav = 'discovery'"
             @refresh-audio="refreshOutputDevices" @select-output="selectSettingsOutput" @select-sample-rate="selectSettingsSampleRate"
             @toggle-sync="toggleSync" @device-saved="onDeviceSettingsSaved"
@@ -4766,6 +4856,39 @@ onUnmounted(() => {
           {{ pl.name }}
         </button>
       </template>
+    </ResponsivePopup>
+
+    <ResponsivePopup
+      :open="addSongsOpen"
+      wrapper-class="dedup-confirm-popup-wrapper"
+      panel-class="settings-dropdown dedup-confirm-popup"
+      centered
+      show-actions
+      cancel-label="Cancel"
+      :save-label="addSongsBusy ? 'Adding…' : 'Add'"
+      :save-disabled="addSongsBusy || addSongsSelected.length === 0"
+      :save-busy="addSongsBusy"
+      @close="addSongsOpen = false"
+      @cancel="addSongsOpen = false"
+      @save="saveAddSongs()"
+    >
+      <div class="modal-header">
+        <h3>Add songs</h3>
+        <button class="icon-btn" @click="addSongsOpen = false">
+          <AppIcon name="close" :size="18" />
+        </button>
+      </div>
+      <div class="modal-body">
+        <input v-model="addSongsQuery" class="library-search" type="text" placeholder="Search tracks..." />
+        <div v-if="addSongsResults.length === 0" class="library-empty">No tracks found.</div>
+        <div v-else class="add-songs-list">
+          <label v-for="track in addSongsResults" :key="track.id" class="add-songs-row">
+            <input v-model="addSongsSelected" type="checkbox" :value="track.id" />
+            <span class="track-title">{{ track.title || track.path }}</span>
+            <span class="track-album">{{ track.artist }}</span>
+          </label>
+        </div>
+      </div>
     </ResponsivePopup>
 
     <!-- Dedup confirm modal -->
@@ -5678,6 +5801,9 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   margin-bottom: 16px; gap: 16px;
 }
 .library-header.page-toolbar { justify-content: flex-end; }
+.add-songs-list { max-height: 50vh; overflow-y: auto; margin-top: 12px; }
+.add-songs-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; min-height: 44px; cursor: pointer; }
+.add-songs-row .track-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .library-page-controls {
   display: flex;
   align-items: center;

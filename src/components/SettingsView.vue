@@ -58,6 +58,7 @@ const emit = defineEmits<{
   navigate: [section: SettingsSection | null];
   'update:showDuplicateTracks': [value: boolean];
   openFolder: [];
+  uploadFiles: [];
   reindex: [];
   identify: [];
   duplicates: [];
@@ -190,7 +191,7 @@ onMounted(() => { void loadConfig(); });
           <div class="settings-group">
             <h3>Music folder</h3>
             <p>Your files are the source of your library.</p>
-            <div class="folder-card"><AppIcon name="folder" /><span>{{ dataDir || 'Music folder unavailable' }}</span><button class="control-button icon-label" @click="emit('openFolder')">{{ dataDir ? 'Open folder' : 'Try again' }}<AppIcon v-if="dataDir" name="external-link" /></button></div>
+            <div class="folder-card"><AppIcon name="folder" /><span>{{ dataDir || 'Music folder unavailable' }}</span><button class="control-button icon-label" @click="emit('openFolder')">{{ dataDir ? 'Open folder' : 'Try again' }}<AppIcon v-if="dataDir" name="external-link" /></button><button class="control-button icon-label" @click="emit('uploadFiles')"><AppIcon name="folder" />Add files</button></div>
           </div>
           <div class="settings-group">
             <h3>Library maintenance</h3>
