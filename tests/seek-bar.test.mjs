@@ -104,3 +104,28 @@ test('keyboard seeking consumes arrow keys so they do not also skip tracks', () 
   assert.equal(prevented, true);
   assert.equal(stopped, true);
 });
+
+test('waveform readiness refreshes the selected cache without reloading library data', async () => {
+  let subscription;
+  const find = node => {
+    if (ts.isExpressionStatement(node) && node.getText(parsed).startsWith("listen('waveform-ready'")) subscription = node.getText(parsed);
+    ts.forEachChild(node, find);
+  };
+  find(parsed);
+  assert.ok(subscription, 'waveform-ready subscription is installed');
+  const worker = readFileSync(new URL('../src-tauri/src/waveform_cache.rs', import.meta.url), 'utf8');
+  assert.match(worker, /app\.emit\("waveform-ready",/);
+  assert.doesNotMatch(worker, /app\.emit\("library-changed",/);
+  let callback;
+  let refreshes = 0;
+  const state = {
+    listen: (event, handler) => { assert.equal(event, 'waveform-ready'); callback = handler; return Promise.resolve(); },
+    refreshTrackWaveform: () => { refreshes++; },
+    loadAppData: () => { assert.fail('waveform completion must not reload library data'); },
+  };
+  vm.runInNewContext(ts.transpileModule(subscription, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText, state);
+  await Promise.resolve();
+  assert.equal(refreshes, 1, 'subscription readiness closes the initial-fetch race');
+  callback();
+  assert.equal(refreshes, 2);
+});

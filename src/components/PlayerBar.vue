@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import SeekSpectrum from './SeekSpectrum.vue';
 import AppIcon from './AppIcon.vue';
 import ArtistLink from './ArtistLink.vue';
 import AppSelect from './AppSelect.vue';
@@ -38,6 +39,9 @@ const props = defineProps<{
   currentTime: number;
   duration: number;
   displayProgressPercent: number;
+  waveform: number[] | null;
+  spectrumLevels: number[];
+  spectrumActive: boolean;
   seeking: boolean;
   showQueueMenu: boolean;
   queueSource: string;
@@ -461,6 +465,10 @@ onUnmounted(() => {
     </div>
 
     <footer class="player">
+    <div v-if="spectrumActive && !reduceMotion" class="footer-spectrum" aria-hidden="true">
+      <span v-for="(level, index) in spectrumLevels" :key="index"
+        class="footer-spectrum-bar" :style="{ transform: `scaleY(${Math.min(1, level * (isPlaying ? beatScale : 1))})` }" />
+    </div>
     <div class="player-left" @click="nowPlaying && emit('openDetail')" style="cursor: pointer;">
       <CoverImage class="thumb" :src="coverUrl(nowPlaying?.cover_hash, 'small')" :placeholder="currentTrack.colors" :style="{
         transform: `scale(${beatScale})`,
@@ -502,11 +510,7 @@ onUnmounted(() => {
         <span class="time">{{ formatTime(currentTime) }}</span>
         <div class="seek-hit" :class="{ dragging: seeking }" role="slider" :tabindex="nowPlaying && duration > 0 ? 0 : -1" aria-label="Playback position" :aria-disabled="!nowPlaying || duration <= 0" :aria-valuemin="0" :aria-valuemax="duration" :aria-valuenow="currentTime" :aria-valuetext="`${formatTime(currentTime)} of ${formatTime(duration)}`"
           @pointerdown="emit('seekStart', $event)" @pointermove="emit('seekMove', $event)" @pointerup="emit('seekEnd', $event)" @pointercancel="emit('seekEnd', $event)" @lostpointercapture="emit('seekEnd', $event)" @keydown="seekKeydown">
-          <div class="bar">
-            <div class="bar-fill" :style="`width:${displayProgressPercent}%`">
-              <div class="bar-thumb" />
-            </div>
-          </div>
+          <SeekSpectrum :waveform="waveform" :progress="displayProgressPercent" :disabled="!nowPlaying || duration <= 0" />
         </div>
         <span class="time">{{ formatTime(duration) }}</span>
       </div>
@@ -641,6 +645,34 @@ onUnmounted(() => {
   isolation: isolate;
 }
 
+/* Real-time spectrum behind the footer controls, without intercepting input. */
+.footer-spectrum {
+  position: absolute;
+  inset-inline: 16px;
+  bottom: 0;
+  height: 100%;
+  display: flex;
+  align-items: stretch;
+  gap: 3px;
+  pointer-events: none;
+  user-select: none;
+  z-index: -1;
+  transform-origin: center bottom;
+  will-change: transform;
+  opacity: 0.18;
+}
+.footer-spectrum-bar {
+  flex: 1;
+  min-width: 0;
+  border-radius: 3px 3px 0 0;
+  background: linear-gradient(to top, var(--color-accent), color-mix(in srgb, var(--color-accent) 32%, transparent));
+  transform-origin: bottom;
+  transition: transform 50ms linear;
+}
+@media (prefers-reduced-motion: reduce) {
+  .footer-spectrum { display: none; }
+}
+
 .player {
   background: var(--color-card);
   border-top: 1px solid var(--color-border);
@@ -650,6 +682,7 @@ onUnmounted(() => {
   padding: 0 16px;
   overflow: visible;
   position: relative;
+  isolation: isolate;
   z-index: 1;
   width: 100%;
   height: 100%;
@@ -952,11 +985,20 @@ onUnmounted(() => {
   background: color-mix(in srgb, var(--color-text) 94%, var(--color-bg));
 }
 
-.seek-hit { position: relative; display: flex; flex: 1; cursor: pointer; touch-action: none; user-select: none; }
-.seek-hit::before { content: ''; position: absolute; inset: -10px 0; z-index: 1; }
-.seek-hit:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 5px; border-radius: 2px; }
-.seek-hit:is(:hover, :focus-visible, .dragging) .bar-fill { background: var(--color-accent); }
-.seek-hit:is(:hover, :focus-visible, .dragging) .bar-thumb { opacity: 1; }
+.seek-hit {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  cursor: pointer;
+  touch-action: none;
+  user-select: none;
+}
+.seek-hit::before { content: ''; position: absolute; inset: -8px 0; }
+.seek-hit:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 3px; border-radius: 4px; }
+.seek-hit[aria-disabled="true"] { cursor: default; }
 
 .progress-row {
   display: flex;
@@ -1214,6 +1256,7 @@ onUnmounted(() => {
     grid-column: 1;
     grid-row: 2 / 3;
   }
+  .footer-spectrum { inset-inline: 10px; }
   .player {
     display: flex;
     flex-direction: column;

@@ -39,6 +39,7 @@ import AppSelect from "./components/AppSelect.vue";
 import PlaylistArtwork from "./components/PlaylistArtwork.vue";
 import AppTopbar from "./components/AppTopbar.vue";
 import PlayerBar from "./components/PlayerBar.vue";
+import SeekSpectrum from "./components/SeekSpectrum.vue";
 import WebGLAlbumRenderer from "./components/WebGLAlbumRenderer.vue";
 import ResponsivePopup from "./components/ResponsivePopup.vue";
 import { createPluginHost, providePluginHost } from './plugins/host';
@@ -424,6 +425,40 @@ const queuedPagedSource = ref<QueuedPagedSource | null>(null);
 const queuedPageLoading = ref(false);
 const queue = ref<Track[]>([]);         // upcoming tracks (max 5 visible)
 const nowPlaying = ref<Track | null>(null);
+const trackWaveform = ref<number[] | null>(null);
+let waveformRequest = 0;
+async function refreshTrackWaveform() {
+  const trackId = nowPlaying.value?.id;
+  const request = ++waveformRequest;
+  if (!appearance.seekWaveform || trackId === undefined) {
+    trackWaveform.value = null;
+    return;
+  }
+  try {
+    const waveform = await invoke<number[] | null>('get_track_waveform', { trackId });
+    if (request === waveformRequest && nowPlaying.value?.id === trackId) trackWaveform.value = waveform;
+  } catch {
+    if (request === waveformRequest) trackWaveform.value = null;
+  }
+}
+watch([() => nowPlaying.value?.id, () => appearance.seekWaveform], () => {
+  trackWaveform.value = null;
+  void refreshTrackWaveform();
+}, { immediate: true, flush: 'sync' });
+
+function seekKeydown(event: KeyboardEvent) {
+  if (!nowPlaying.value || duration.value <= 0) return;
+  const positions: Record<string, number> = {
+    ArrowLeft: currentTime.value - 5, ArrowDown: currentTime.value - 5,
+    ArrowRight: currentTime.value + 5, ArrowUp: currentTime.value + 5,
+    Home: 0, End: duration.value,
+  };
+  const position = positions[event.key];
+  if (position === undefined) return;
+  event.preventDefault();
+  event.stopPropagation();
+  if (!event.repeat) void seek(Math.max(0, Math.min(duration.value, position)));
+}
 const pendingLikes = ref(new Set<number>());
 const recentTracks = ref<Track[]>([]);
 const showQueueMenu = ref(false);
@@ -1668,11 +1703,15 @@ function openPlayerArtist(name: string) {
 let spectrumPollTimer: ReturnType<typeof setInterval> | null = null;
 let spectrumPollPending = false;
 let spectrumPollVersion = 0;
+const spectrumDocumentVisible = ref(document.visibilityState === 'visible');
+const spectrumActive = computed(() => spectrumDocumentVisible.value && !reducedMotion.value
+  && (appearance.footerSpectrum || showDetail.value)
+  && isPlaying.value && !!nowPlaying.value && !remoteOutputPeer.value && seekPreviewPos.value === null);
 
 function normalizeSpectrum(values: number[]) {
   return Array.from({ length: SPECTRUM_SEGMENT_COUNT }, (_, index) => {
     const value = values[index] ?? 0;
-    return Math.max(0, Math.min(1, value));
+    return Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0;
   });
 }
 
@@ -1681,27 +1720,25 @@ function resetSpectrum() {
 }
 
 async function refreshSpectrum(version = spectrumPollVersion) {
-  if (version !== spectrumPollVersion || spectrumPollPending || reducedMotion.value || !showDetail.value || !nowPlaying.value) {
+  if (version !== spectrumPollVersion || spectrumPollPending || !spectrumActive.value) {
     return;
   }
 
   spectrumPollPending = true;
   try {
     const next = await invoke<number[]>('playback_spectrum');
-    if (version !== spectrumPollVersion) return;
+    if (version !== spectrumPollVersion || !spectrumActive.value) return;
     spectrumLevels.value = normalizeSpectrum(next);
   } catch (_) {
     if (version !== spectrumPollVersion) return;
     resetSpectrum();
   } finally {
-    if (version === spectrumPollVersion) {
-      spectrumPollPending = false;
-    }
+    spectrumPollPending = false;
   }
 }
 
 function startSpectrumPolling() {
-  if (spectrumPollTimer || reducedMotion.value || !showDetail.value || !nowPlaying.value) return;
+  if (spectrumPollTimer || !spectrumActive.value) return;
   spectrumPollVersion += 1;
   const version = spectrumPollVersion;
   void refreshSpectrum(version);
@@ -1712,7 +1749,6 @@ function startSpectrumPolling() {
 
 function stopSpectrumPolling(reset = true) {
   spectrumPollVersion += 1;
-  spectrumPollPending = false;
   if (spectrumPollTimer) {
     clearInterval(spectrumPollTimer);
     spectrumPollTimer = null;
@@ -1876,8 +1912,7 @@ watch([showDetail, reducedMotion, () => appearance.album3d], ([open, reduce, alb
   cardDragging.value = false;
   if (open && !reduce) {
     if (album3d) startAmbient();
-    startSpectrumPolling();
-  } else stopSpectrumPolling();
+  }
 });
 watch(reducedMotion, (reduce) => {
   if (!reduce) return;
@@ -1890,20 +1925,14 @@ watch(reducedMotion, (reduce) => {
 
 watch(() => nowPlaying.value?.id, () => {
   cancelSeekGesture();
-  resetSpectrum();
-  if (showDetail.value) {
-    void refreshSpectrum(spectrumPollVersion);
-  }
 });
 
-watch(isPlaying, (playing) => {
-  if (!playing) {
-    resetSpectrum();
-  } else if (showDetail.value) {
-    startSpectrumPolling();
-    void refreshSpectrum(spectrumPollVersion);
-  }
-});
+// Both visualizations consume one current-output FFT stream. Invalidate in-flight
+// responses synchronously when playback, the track, or a seek changes.
+watch([spectrumActive, () => nowPlaying.value?.id, seekPreviewPos], () => {
+  stopSpectrumPolling();
+  startSpectrumPolling();
+}, { flush: 'sync' });
 // ────────────────────────────────────────────────────────────────────────────
 
 const displayProgressPercent = computed(() => {
@@ -3094,6 +3123,7 @@ function onWindowFocus() {
 }
 
 function onDocumentVisibilityChange() {
+  spectrumDocumentVisible.value = document.visibilityState === 'visible';
   if (document.visibilityState === 'visible') {
     void loadAppData('resume');
   }
@@ -3769,8 +3799,11 @@ onMounted(() => {
     }
   });
 
+  listen('waveform-ready', () => { void refreshTrackWaveform(); })
+    .then(() => { void refreshTrackWaveform(); });
   listen('library-changed', () => {
     libraryVersion.value++;
+    void refreshTrackWaveform();
     void loadAppData('sync');
   })
     // Do the first fetch only after this subscription is active. Otherwise a
@@ -5097,21 +5130,21 @@ onUnmounted(() => {
     <div class="mobile-seek-wrap" :class="{ active: mobileSeekActive }">
       <div
         class="mobile-seek-hit"
+        role="slider" :tabindex="nowPlaying && duration > 0 ? 0 : -1" aria-label="Playback position" :aria-disabled="!nowPlaying || duration <= 0" :aria-valuemin="0" :aria-valuemax="duration" :aria-valuenow="currentTime" :aria-valuetext="`${formatTime(currentTime)} of ${formatTime(duration)}`"
+        @keydown="seekKeydown"
         @pointerdown="mobileSeekHoldStart"
         @pointermove="mobileSeekHoldMove"
         @pointerup="mobileSeekHoldEnd"
         @pointercancel="mobileSeekHoldEnd"
         @lostpointercapture="mobileSeekHoldEnd"
       >
-        <div class="mobile-seek-track">
-          <div class="mobile-seek-fill" :style="`width:${displayProgressPercent}%`">
-            <div class="mobile-seek-thumb" />
-          </div>
-        </div>
+        <SeekSpectrum :waveform="trackWaveform" :progress="displayProgressPercent" :disabled="!nowPlaying || duration <= 0" />
       </div>
     </div>
     <PlayerBar
       :reduce-motion="reducedMotion"
+      :spectrum-levels="spectrumLevels"
+      :spectrum-active="appearance.footerSpectrum && spectrumActive"
       :is-liked="nowPlaying?.is_liked ?? false"
       :like-pending="!!nowPlaying && pendingLikes.has(nowPlaying.id)"
       @toggle-like="nowPlaying && toggleLike(nowPlaying)"
@@ -5126,6 +5159,7 @@ onUnmounted(() => {
       :current-time="currentTime"
       :duration="duration"
       :display-progress-percent="displayProgressPercent"
+      :waveform="trackWaveform"
       :seeking="mobileSeekActive"
       :queue-source="queueSource"
       :queue="queue"
@@ -5233,17 +5267,15 @@ onUnmounted(() => {
             <!-- seek -->
             <div class="detail-seek-wrap">
               <div class="detail-bar"
+                role="slider" :tabindex="nowPlaying && duration > 0 ? 0 : -1" aria-label="Playback position" :aria-disabled="!nowPlaying || duration <= 0" :aria-valuemin="0" :aria-valuemax="duration" :aria-valuenow="currentTime" :aria-valuetext="`${formatTime(currentTime)} of ${formatTime(duration)}`"
+                @keydown="seekKeydown"
                 @pointerdown="mobileSeekHoldStart"
                 @pointermove="mobileSeekHoldMove"
                 @pointerup="mobileSeekHoldEnd"
                 @pointercancel="mobileSeekHoldEnd"
                 @lostpointercapture="mobileSeekHoldEnd"
               >
-                <div class="detail-bar-track">
-                  <div class="detail-bar-fill" :style="`width:${displayProgressPercent}%`">
-                    <div class="detail-bar-thumb" />
-                  </div>
-                </div>
+                <SeekSpectrum :waveform="trackWaveform" :progress="displayProgressPercent" :disabled="!nowPlaying || duration <= 0" />
               </div>
               <div class="detail-time-row">
                 <span>{{ formatTime(currentTime) }}</span>
@@ -6373,37 +6405,9 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
   }
   .mobile-seek-hit {
     pointer-events: auto;
-    padding: 4px 0;
-  }
-  .mobile-seek-track {
-    height: 4px;
-    border-radius: 999px;
-    background: var(--color-surface-hover);
-    overflow: hidden;
-    transition: height .15s ease;
-  }
-  .mobile-seek-wrap.active .mobile-seek-track {
-    height: 10px;
-  }
-  .mobile-seek-fill {
-    height: 100%;
-    background: var(--color-text);
-    position: relative;
-  }
-  .mobile-seek-thumb {
-    position: absolute;
-    right: 0;
-    top: 50%;
-    transform: translate(50%, -50%);
-    width: 10px;
-    height: 10px;
-    border-radius: 50%;
-    background: var(--color-text);
-    opacity: 0;
-    transition: opacity .15s ease;
-  }
-  .mobile-seek-wrap.active .mobile-seek-thumb {
-    opacity: 1;
+    padding: 8px 0;
+    touch-action: none;
+    user-select: none;
   }
 
   .activity-dock {
@@ -6739,57 +6743,15 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
 .detail-seek-wrap { display: flex; flex-direction: column; gap: 6px; width: 100%; }
 
 .detail-bar {
-  height: 28px; display: flex; align-items: center; cursor: pointer;
+  position: relative;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  touch-action: none;
+  user-select: none;
 }
-
 .detail-seek-wrap { position: relative; }
-
-.detail-bar {
-  position: relative;
-  height: 28px;
-}
-
-.detail-bar-track {
-  position: relative;
-  width: 100%;
-  height: 4px;
-  background: var(--color-surface-hover);
-  border-radius: 999px;
-  pointer-events: none;
-}
-
-.detail-bar-fill {
-  position: absolute;
-  inset: 0 auto 0 0;
-  height: 4px;
-  background: var(--color-text);
-  border-radius: 999px;
-  pointer-events: none;
-}
-
-.detail-bar-buffer {
-  position: absolute;
-  left: 0;
-  top: 50%;
-  height: 2px;
-  transform: translateY(-50%);
-  background: color-mix(in srgb, var(--color-text) 20%, transparent);
-  border-radius: 999px;
-  pointer-events: none;
-}
-
-.detail-bar-thumb {
-  position: absolute;
-  right: -6px; top: 50%;
-  transform: translateY(-50%);
-  width: 12px; height: 12px;
-  border-radius: 50%;
-  background: var(--color-text);
-}
-
-.detail-bar-track {
-  flex-shrink: 0;
-}
 
 .detail-time-row {
   display: flex;
