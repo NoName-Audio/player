@@ -405,6 +405,12 @@ watch(() => props.isPlaying, (isPlaying) => {
   if (zippyPausePhase.value !== "click") zippyPausePhase.value = "idle";
 });
 
+const likeAnimation = ref<'liked' | 'unliked' | null>(null);
+watch(() => [props.nowPlaying?.id, props.isLiked] as const, ([id, liked], [previousId, previousLiked]) => {
+  likeAnimation.value = id === previousId && liked !== previousLiked && !props.reduceMotion
+    ? (liked ? 'liked' : 'unliked') : null;
+});
+
 onUnmounted(() => {
   if (zippyIntroTimer !== undefined) clearTimeout(zippyIntroTimer);
   clearZippyPauseTimers();
@@ -481,8 +487,8 @@ onUnmounted(() => {
           <ArtistLink :artist="nowPlaying?.artist" @open="emit('openArtist', $event)">{{ currentTrack.artist }}</ArtistLink>
         </div>
       </div>
-      <button class="icon-btn" :class="{ green: isLiked }" :disabled="!nowPlaying || nowPlaying.id <= 0 || likePending" :aria-busy="likePending" :title="isLiked ? 'Unlike' : 'Like'" :aria-pressed="isLiked" @click.stop="emit('toggleLike')">
-        <AppIcon :name="isLiked ? 'liked' : 'like'" :size="16" />
+      <button class="icon-btn like-button" :class="{ green: isLiked }" :disabled="!nowPlaying || nowPlaying.id <= 0 || likePending" :aria-busy="likePending" :title="isLiked ? 'Unlike' : 'Like'" :aria-pressed="isLiked" @click.stop="emit('toggleLike')">
+        <span class="like-glyph" :class="likeAnimation && `like-${likeAnimation}`" @animationend="likeAnimation = null"><AppIcon :name="isLiked ? 'liked' : 'like'" :size="16" /></span>
       </button>
     </div>
 
@@ -643,6 +649,24 @@ onUnmounted(() => {
   z-index: 100;
   overflow: visible;
   isolation: isolate;
+}
+
+.like-glyph { display: inline-flex; transform-origin: center; }
+.like-liked { animation: like-pop 420ms cubic-bezier(.2,.8,.2,1); }
+.like-unliked { animation: like-release 300ms ease-out; }
+@keyframes like-pop {
+  0% { transform: scale(.75); }
+  45% { transform: scale(1.45) rotate(-12deg); }
+  75% { transform: scale(.92) rotate(5deg); }
+  100% { transform: scale(1); }
+}
+@keyframes like-release {
+  0% { transform: scale(1); }
+  40% { transform: scale(.65) rotate(12deg); opacity: .45; }
+  100% { transform: scale(1); opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .like-glyph { animation: none; }
 }
 
 /* Real-time spectrum behind the footer controls, without intercepting input. */

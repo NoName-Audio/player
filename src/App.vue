@@ -6398,10 +6398,11 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
     position: fixed;
     left: 0;
     right: 0;
-    bottom: calc(125px + env(safe-area-inset-bottom));
+    bottom: calc(130px + env(safe-area-inset-bottom));
     z-index: 220;
     padding: 0 10px;
     pointer-events: none;
+    transform: translateY(50%);
   }
   .mobile-seek-hit {
     pointer-events: auto;
@@ -6485,7 +6486,7 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 16px; }
     position: fixed;
     left: 0;
     right: 0;
-    bottom: calc(120px + env(safe-area-inset-bottom));
+    bottom: calc(130px + env(safe-area-inset-bottom));
     z-index: 220;
     padding: 0 10px;
     pointer-events: none;
