@@ -3438,7 +3438,7 @@ async function uploadFiles() {
   }
   const picked = await openFileDialog({
     multiple: true,
-    filters: [{ name: 'Music', extensions: ['mp3', 'flac', 'ogg', 'opus', 'aac', 'm4a', 'wav', 'wv', 'ape'] }],
+    filters: [{ name: 'Music', extensions: ['mp3', 'flac', 'ogg', 'opus', 'aac', 'm4a', 'wav', 'wv', 'ape', 'cue'] }],
   });
   if (picked?.length) await importPickedPaths(picked);
 }

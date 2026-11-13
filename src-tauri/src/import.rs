@@ -5,14 +5,19 @@
 //! `Artist/Album/filename`, `Artist/filename`, or `filename` when tags are
 //! missing. Copied files are indexed immediately.
 
+use rusqlite::Connection;
 use serde::Serialize;
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use tauri::Emitter;
 use walkdir::WalkDir;
 
 use crate::import_paths::{build_metadata_based_path, extract_audio_metadata};
-use crate::library::{index_file, is_audio_extension, is_cue_extension, rel_path, LibraryState};
+use crate::library::{
+    cue_audio_files, index_cue_file, index_file, is_audio_extension, is_cue_extension, rel_path,
+    LibraryState,
+};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -37,6 +42,17 @@ fn emit_progress(app: &tauri::AppHandle, progress: ImportProgress) {
     let _ = app.emit("index-progress", progress);
 }
 
+fn track_ids_for(conn: &Connection, rel: &str) -> Vec<i64> {
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT id FROM tracks WHERE path = ?1 OR substr(path, 1, length(?1) + 1) = ?1 || '#'",
+    ) else {
+        return Vec::new();
+    };
+    stmt.query_map([rel], |row| row.get::<_, i64>(0))
+        .map(|rows| rows.filter_map(|row| row.ok()).collect())
+        .unwrap_or_default()
+}
+
 #[tauri::command]
 pub fn import_dropped_files(
     app: tauri::AppHandle,
@@ -59,6 +75,30 @@ pub fn import_dropped_files(
             sources.push(path);
         }
     }
+
+    let extra_audio: Vec<PathBuf> = sources
+        .iter()
+        .filter(|source| {
+            source
+                .extension()
+                .and_then(|value| value.to_str())
+                .is_some_and(|value| is_cue_extension(&value.to_lowercase()))
+        })
+        .flat_map(|source| cue_audio_files(source))
+        .filter(|audio| audio.is_file() && !sources.contains(audio))
+        .collect();
+    for audio in extra_audio {
+        if !sources.contains(&audio) {
+            sources.push(audio);
+        }
+    }
+    sources.sort_by_key(|source| {
+        source
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_some_and(|value| is_cue_extension(&value.to_lowercase()))
+    });
+    let mut audio_target_dirs: HashMap<PathBuf, PathBuf> = HashMap::new();
 
     let mut imported = 0usize;
     let mut imported_track_ids: Vec<i64> = Vec::new();
@@ -92,6 +132,9 @@ pub fn import_dropped_files(
         // Skip files that already live inside the library.
         if let Ok(canonical) = fs::canonicalize(&source) {
             if canonical.starts_with(&canonical_data_dir) {
+                let conn = state.conn();
+                let conn = conn.lock().unwrap();
+                imported_track_ids.extend(track_ids_for(&conn, &rel_path(&canonical_data_dir, &canonical)));
                 skipped += 1;
                 continue;
             }
@@ -107,7 +150,14 @@ pub fn import_dropped_files(
         } else {
             (None, None)
         };
-        let target_dir = build_metadata_based_path(&data_dir, artist.as_deref(), album.as_deref());
+        let target_dir = if is_cue_extension(&ext) {
+            cue_audio_files(&source)
+                .iter()
+                .find_map(|audio| audio_target_dirs.get(audio).cloned())
+                .unwrap_or_else(|| data_dir.clone())
+        } else {
+            build_metadata_based_path(&data_dir, artist.as_deref(), album.as_deref())
+        };
         if let Err(e) = fs::create_dir_all(&target_dir) {
             eprintln!(
                 "[import] failed to create directory {}: {}",
@@ -118,8 +168,14 @@ pub fn import_dropped_files(
             continue;
         }
         let target = target_dir.join(filename);
+        if is_audio_extension(&ext) {
+            audio_target_dirs.insert(source.clone(), target_dir.clone());
+        }
 
         if target.exists() {
+            let conn = state.conn();
+            let conn = conn.lock().unwrap();
+            imported_track_ids.extend(track_ids_for(&conn, &rel_path(&data_dir, &target)));
             skipped += 1;
             continue;
         }
@@ -138,16 +194,15 @@ pub fn import_dropped_files(
         {
             let conn = state.conn();
             let conn = conn.lock().unwrap();
-            if let Err(e) = index_file(&conn, &data_dir, &target) {
+            let indexed = if is_cue_extension(&ext) {
+                index_cue_file(&conn, &data_dir, &target).map(|_| ())
+            } else {
+                index_file(&conn, &data_dir, &target).map(|_| ())
+            };
+            if let Err(e) = indexed {
                 eprintln!("[import] failed to index {}: {}", target.display(), e);
             }
-            if let Ok(id) = conn.query_row(
-                "SELECT id FROM tracks WHERE path = ?1",
-                [rel_path(&data_dir, &target)],
-                |row| row.get::<_, i64>(0),
-            ) {
-                imported_track_ids.push(id);
-            }
+            imported_track_ids.extend(track_ids_for(&conn, &rel_path(&data_dir, &target)));
         }
         imported += 1;
         emit_progress(
