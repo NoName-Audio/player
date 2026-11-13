@@ -298,19 +298,28 @@ cd src-tauri && cargo test # Rust tests
 
 ### App icons
 
-`public/app-icon.svg` is the original transparent logo, also used by About and
-the browser favicon. Regenerate desktop, iOS, and Android launcher assets with:
+`public/app-icon.svg` is the unchanged original transparent logo, also used by
+About and the browser favicon. With ImageMagick 7 (`magick`) and the project's
+pnpm dependencies installed, regenerate desktop, iOS, and Android assets with:
 
 ```bash
-pnpm tauri icon public/app-icon.svg
-# Tauri CLI 2.10.1 emits 49px hdpi launchers; restore Android's required 72px:
-sips -z 72 72 src-tauri/gen/android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png --out src-tauri/gen/android/app/src/main/res/mipmap-hdpi/ic_launcher.png
-sips -z 72 72 src-tauri/gen/android/app/src/main/res/mipmap-xxxhdpi/ic_launcher_round.png --out src-tauri/gen/android/app/src/main/res/mipmap-hdpi/ic_launcher_round.png
+pnpm icons:generate
 ```
 
-The CLI writes Android resources directly to `src-tauri/gen/android/app/src/main/res/`
-when that project exists. Keep the transparent desktop/Android foreground assets;
-iOS and Android adaptive backgrounds use the tooling's default white treatment.
+The script invokes Tauri directly (without version synchronization), preserving
+desktop PNG/ICO/ICNS alpha and iOS's required opaque white background. It then
+regenerates Android resources in `src-tauri/gen/android/app/src/main/res/` with
+transparent backgrounds and centered artwork: the adaptive foreground fits a
+46dp square inside the central 66dp safe circle of the 108dp canvas. Legacy and
+round launchers also have padding, and hdpi launchers are correctly 72px. Both
+adaptive launcher XML variants and the manifest round-icon reference are kept
+in sync. Run this command rather than bare `tauri icon`, which overwrites these
+Android corrections. The Android project must already exist.
+
+Android launchers can still impose their own opaque backing, shadows, and mask;
+transparent resources cannot force a transparent launcher presentation. Circle
+and rounded-square previews can check artwork fit, but are not a substitute for
+checking the installed icon on a real launcher.
 
 ### Profile library indexing with Tracy
 
