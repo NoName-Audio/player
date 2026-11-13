@@ -104,10 +104,10 @@ These screenshots were captured with the built-in demo mode. Click any image to 
 		</td>
 		<td width="50%" align="center">
 			<a href="./readme/soulseek-search.png">
-				<img src="./readme/soulseek-search.png" alt="Soulseek search results" width="96%" />
+				<img src="./readme/soulseek-search.png" alt="Soulseek search awaiting account configuration" width="96%" />
 			</a>
 			<br />
-			<sub>Soulseek search results inside the app</sub>
+			<sub>Soulseek search awaiting account configuration (no network results)</sub>
 		</td>
 	</tr>
 	<tr>
