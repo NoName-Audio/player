@@ -24,7 +24,7 @@ use lofty::picture::PictureType;
 use lofty::prelude::{Accessor, AudioFile, ItemKey, TaggedFileExt};
 use lofty::probe::Probe;
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
-use rusqlite::{params, params_from_iter, types::Value, Connection};
+use rusqlite::{params, params_from_iter, types::Value, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
@@ -217,7 +217,7 @@ impl LibraryState {
     /// Sets up the library subsystem:
     ///   1. Creates `data_dir` if missing.
     ///   2. Opens / migrates `data_dir/app.db`.
-    ///   3. Full-scans `data_dir` on startup.
+    ///   3. Queues legacy verification and first-launch indexing in the background.
     ///   4. Spawns a background FS watcher for incremental updates.
     pub fn new(data_dir: PathBuf, app_handle: tauri::AppHandle) -> Result<Self, BoxError> {
         Self::new_with_storage(data_dir, app_handle, false)
@@ -250,18 +250,25 @@ impl LibraryState {
         };
         init_schema(&conn)?;
         purge_internal_library_rows(&conn)?;
-        repair_physical_file_hashes(&conn, &data_dir)?;
+        prepare_physical_hash_repair(&conn)?;
 
-        // Only run the full directory scan on first launch (new DB).
-        // On subsequent launches the FS watcher handles incremental changes;
-        // the user can trigger a manual reindex at any time.
-        if is_new_db {
-            index_directory(&conn, &data_dir)?;
-        }
 
         log_library_snapshot("startup", &data_dir, db_path.as_deref(), &conn);
 
         let conn = Arc::new(Mutex::new(conn));
+        {
+            let worker_conn = Arc::clone(&conn);
+            let worker_dir = data_dir.clone();
+            let worker_app = app_handle.clone();
+            std::thread::spawn(move || {
+                if let Err(error) = repair_pending_hashes(&worker_conn, &worker_dir, &worker_app) {
+                    eprintln!("[library] hash verification failed: {error}");
+                }
+                if is_new_db {
+                    index_directory_async(&worker_conn, &worker_dir, &worker_app);
+                }
+            });
+        }
         if !is_new_db {
             spawn_album_tag_backfill(Arc::clone(&conn), data_dir.clone(), app_handle.clone());
         }
@@ -1093,50 +1100,92 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     let _ = conn
         .execute_batch("ALTER TABLE smart_playlists ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0");
     let _ = conn.execute_batch("ALTER TABLE smart_playlists ADD COLUMN pinned_at INTEGER");
+    conn.execute_batch("CREATE TABLE IF NOT EXISTS physical_hash_repairs (
+        track_id INTEGER PRIMARY KEY REFERENCES tracks(id) ON DELETE CASCADE,
+        state TEXT NOT NULL DEFAULT 'pending');")?;
     Ok(())
 }
 
-/// Upgrade cached physical identities once, before the connection is exposed to
-/// sync. Older sync code could write a remote hash onto different local bytes;
-/// mtime-based indexing cannot detect that corruption. Only identity fields are
-/// changed, so edits, ratings, history, playlists and CUE segment IDs survive.
-fn repair_physical_file_hashes(conn: &Connection, data_dir: &Path) -> Result<(), BoxError> {
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS library_migrations (name TEXT PRIMARY KEY);",
-    )?;
-    let transaction = conn.unchecked_transaction()?;
-    let completed: bool = transaction.query_row(
-        "SELECT EXISTS(SELECT 1 FROM library_migrations WHERE name = 'physical-file-hashes-v1')",
-        [],
-        |row| row.get(0),
-    )?;
-    if completed {
-        return Ok(());
+/// Queue legacy identities without opening media. The queue is also sync's
+/// quarantine: old values remain available to the UI until verified.
+fn prepare_physical_hash_repair(conn: &Connection) -> Result<(), BoxError> {
+    conn.execute_batch("CREATE TABLE IF NOT EXISTS library_migrations (name TEXT PRIMARY KEY);
+        CREATE TABLE IF NOT EXISTS physical_hash_repairs (
+            track_id INTEGER PRIMARY KEY REFERENCES tracks(id) ON DELETE CASCADE,
+            state TEXT NOT NULL DEFAULT 'pending');")?;
+    let tx = conn.unchecked_transaction()?;
+    let initialized: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM library_migrations WHERE name IN
+         ('physical-file-hashes-v1', 'physical-file-hashes-v1-queued'))", [], |row| row.get(0))?;
+    if !initialized {
+        tx.execute("INSERT INTO physical_hash_repairs(track_id) SELECT id FROM tracks", [])?;
+        tx.execute("INSERT INTO library_migrations(name) VALUES ('physical-file-hashes-v1-queued')", [])?;
     }
+    finish_physical_hash_repair(&tx)?;
+    tx.commit()?;
+    Ok(())
+}
 
-    let physical_tracks: Vec<(i64, String)> = {
-        let mut statement = transaction.prepare(
-            "SELECT id, COALESCE(NULLIF(source_path, ''), path) FROM tracks
-             WHERE source_kind = 'file' AND segment_start_secs IS NULL AND cue_path IS NULL",
-        )?;
-        let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+fn finish_physical_hash_repair(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute("INSERT OR IGNORE INTO library_migrations(name)
+        SELECT 'physical-file-hashes-v1' WHERE NOT EXISTS(SELECT 1 FROM physical_hash_repairs)", [])?;
+    Ok(())
+}
+
+/// Commit one identity only; never re-import tags or perform duplicate cleanup.
+fn commit_repaired_hash(conn: &Connection, id: i64, hash: Option<&str>) -> Result<(), BoxError> {
+    let tx = conn.unchecked_transaction()?;
+    if let Some(hash) = hash {
+        tx.execute("UPDATE tracks SET file_hash=?1, rarity=?2 WHERE id=?3",
+            params![hash, rarity_from_hash(hash), id])?;
+        tx.execute("DELETE FROM physical_hash_repairs WHERE track_id=?1", [id])?;
+    } else {
+        tx.execute("UPDATE physical_hash_repairs SET state='failed' WHERE track_id=?1", [id])?;
+    }
+    finish_physical_hash_repair(&tx)?;
+    tx.commit()?;
+    Ok(())
+}
+
+fn repaired_identity(hash: &str, start: Option<f64>, end: Option<f64>) -> String {
+    match start {
+        Some(start) => hash_virtual_track(&["cue-track-v2", hash, &format!("{start:.3}"),
+            &end.map(|end| format!("{end:.3}")).unwrap_or_default()]),
+        None => hash.to_owned(),
+    }
+}
+
+fn repair_pending_hashes(conn: &Arc<Mutex<Connection>>, data_dir: &Path, app: &tauri::AppHandle) -> Result<(), BoxError> {
+    let sources: Vec<String> = {
+        let db = conn.lock().unwrap();
+        let mut stmt = db.prepare("SELECT DISTINCT COALESCE(NULLIF(t.source_path,''),t.path)
+            FROM tracks t JOIN physical_hash_repairs r ON r.track_id=t.id
+            WHERE r.state='pending' ORDER BY 1")?;
+        let rows = stmt.query_map([], |r| r.get(0))?;
         rows.collect::<rusqlite::Result<_>>()?
     };
-    for (id, path) in physical_tracks {
-        let hash = hash_file(&data_dir.join(path));
-        let rarity = hash.as_deref().map(rarity_from_hash);
-        // Unreadable/missing files must not advertise an unverified identity.
-        // A later successful index retries them because their hash is NULL.
-        transaction.execute(
-            "UPDATE tracks SET file_hash = ?1, rarity = ?2 WHERE id = ?3",
-            params![hash, rarity, id],
-        )?;
+    let total = sources.len();
+    for (i, path) in sources.into_iter().enumerate() {
+        // File I/O deliberately happens outside the shared SQLite mutex.
+        let hash = hash_file(&rel_to_abs_path(data_dir, &path));
+        let db = conn.lock().unwrap();
+        let rows: Vec<(i64, Option<f64>, Option<f64>)> = {
+            let mut stmt = db.prepare("SELECT t.id,t.segment_start_secs,t.segment_end_secs
+                FROM tracks t JOIN physical_hash_repairs r ON r.track_id=t.id
+                WHERE COALESCE(NULLIF(t.source_path,''),t.path)=?1")?;
+            let rows = stmt.query_map([&path], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
+            rows.collect::<rusqlite::Result<_>>()?
+        };
+        for (id, start, end) in rows {
+            let identity = hash.as_deref().map(|hash| repaired_identity(hash, start, end));
+            commit_repaired_hash(&db, id, identity.as_deref())?;
+        }
+        drop(db);
+        emit_index_progress(app, i + 1, total, "indexing", 0, Some(track_name_from_rel(&path)));
     }
-    transaction.execute(
-        "INSERT INTO library_migrations(name) VALUES ('physical-file-hashes-v1')",
-        [],
-    )?;
-    transaction.commit()?;
+    emit_index_progress(app, total, total, "done", 0, None);
+    use tauri::Emitter;
+    let _ = app.emit("library-changed", ());
     Ok(())
 }
 
@@ -1764,78 +1813,6 @@ fn cue_sheet_album_tags(path: &Path) -> Option<AlbumTags> {
     }
 }
 
-/// Synchronous version for startup (no events available yet).
-#[cfg_attr(
-    feature = "tracy",
-    tracing::instrument(
-        name = "library.index.full_startup",
-        target = "player_lib::profile",
-        skip(conn),
-        fields(root = %data_dir.display())
-    )
-)]
-fn index_directory(conn: &Connection, data_dir: &Path) -> Result<(), BoxError> {
-    let mut visited: HashSet<String> = HashSet::new();
-
-    for entry in WalkDir::new(data_dir)
-        .into_iter()
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().is_file())
-    {
-        let path = entry.path();
-        if is_internal_library_path(data_dir, path) {
-            continue;
-        }
-        let ext = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("")
-            .to_ascii_lowercase();
-
-        if !is_audio_extension(&ext) && !is_cue_extension(&ext) {
-            continue;
-        }
-
-        let rel = rel_path(data_dir, path);
-        if is_cue_extension(&ext) {
-            match index_cue_file(conn, data_dir, path) {
-                Ok(paths) => {
-                    for path in paths {
-                        visited.insert(path);
-                    }
-                }
-                Err(e) => eprintln!("[library] failed to index {}: {e}", path.display()),
-            }
-        } else {
-            visited.insert(rel);
-            if let Err(e) = index_file(conn, data_dir, path) {
-                eprintln!("[library] failed to index {}: {e}", path.display());
-            }
-        }
-    }
-
-    // Remove DB rows whose files no longer exist.
-    // Guard: if the walk found nothing at all (permission denied, unmounted storage, etc.)
-    // do NOT purge the DB — that would wipe all tracks on every cold start.
-    if visited.is_empty() {
-        return Ok(());
-    }
-    let stale: Vec<String> = {
-        let mut stmt = conn.prepare("SELECT path FROM tracks")?;
-        let stale = stmt
-            .query_map([], |row| row.get(0))?
-            .filter_map(|r| r.ok())
-            .filter(|p: &String| !visited.contains(p))
-            .collect();
-        stale
-    };
-    for path in stale {
-        delete_tracks_by_path(conn, &path)?;
-    }
-
-    Ok(())
-}
-
 /// Returns `Ok(true)` if a new/updated row was written, `Ok(false)` if skipped.
 #[cfg_attr(
     feature = "tracy",
@@ -1849,6 +1826,14 @@ fn index_directory(conn: &Connection, data_dir: &Path) -> Result<(), BoxError> {
 pub(crate) fn index_file(conn: &Connection, data_dir: &Path, abs: &Path) -> Result<bool, BoxError> {
     if is_internal_library_path(data_dir, abs) {
         return Ok(false);
+    }
+    let queued: Option<i64> = conn.query_row(
+        "SELECT t.id FROM tracks t JOIN physical_hash_repairs r ON r.track_id=t.id WHERE t.path=?1",
+        [rel_path(data_dir, abs)], |row| row.get(0)).optional()?;
+    if let Some(id) = queued {
+        let hash = hash_file(abs);
+        commit_repaired_hash(conn, id, hash.as_deref())?;
+        return Ok(hash.is_some());
     }
 
     let rel = rel_path(data_dir, abs);
@@ -2609,6 +2594,22 @@ fn index_cue_file(
     cue_abs: &Path,
 ) -> Result<Vec<String>, BoxError> {
     let cue_rel = rel_path(data_dir, cue_abs);
+    let queued: Vec<(i64, String, String, Option<f64>, Option<f64>)> = {
+        let mut stmt = conn.prepare("SELECT t.id,t.path,t.source_path,t.segment_start_secs,t.segment_end_secs
+            FROM tracks t JOIN physical_hash_repairs r ON r.track_id=t.id WHERE t.cue_path=?1")?;
+        let rows = stmt.query_map([&cue_rel], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)))?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+    if !queued.is_empty() {
+        let mut paths = Vec::new();
+        for (id, path, source, start, end) in queued {
+            let hash = hash_file(&rel_to_abs_path(data_dir, &source));
+            let identity = hash.as_deref().map(|hash| repaired_identity(hash, start, end));
+            commit_repaired_hash(conn, id, identity.as_deref())?;
+            paths.push(path);
+        }
+        return Ok(paths);
+    }
     let cue_modified_secs = path_modified_secs(cue_abs);
     let now_secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -4569,6 +4570,31 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
+    fn physical_hash_queue_resumes_partial_work_and_keeps_failed_sources_quarantined() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        conn.execute_batch("INSERT INTO tracks(id,path,file_hash,rarity) VALUES
+            (1,'missing-a.flac','old-a','Mythic'),(2,'missing-b.flac','old-b','Rare');
+            INSERT INTO tracks(id,path,file_hash,source_kind,source_path,cue_path,segment_start_secs,segment_end_secs)
+            VALUES (3,'album.cue#01','old-cue','cue','missing-a.flac','album.cue',0,10);").unwrap();
+        prepare_physical_hash_repair(&conn).unwrap();
+        assert_eq!(get_track_by_id(&conn, 1).unwrap().file_hash.as_deref(), Some("old-a"));
+        commit_repaired_hash(&conn, 1, Some("abcdef")).unwrap();
+        commit_repaired_hash(&conn, 2, None).unwrap();
+        prepare_physical_hash_repair(&conn).unwrap();
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM physical_hash_repairs WHERE state='pending'", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM physical_hash_repairs WHERE state='failed'", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM library_migrations WHERE name='physical-file-hashes-v1'", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+        let cue_hash = repaired_identity("abcdef", Some(0.0), Some(10.0));
+        commit_repaired_hash(&conn, 3, Some(&cue_hash)).unwrap();
+        assert_eq!(get_track_by_id(&conn, 3).unwrap().file_hash.as_deref(), Some(cue_hash.as_str()));
+        commit_repaired_hash(&conn, 2, Some("123456")).unwrap();
+        prepare_physical_hash_repair(&conn).unwrap();
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM physical_hash_repairs", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM library_migrations WHERE name='physical-file-hashes-v1'", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+    }
+
+    #[test]
     fn physical_hash_upgrade_repairs_unchanged_files_and_preserves_virtual_tracks() {
         let suffix = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
         let data_dir = std::env::temp_dir().join(format!("player-hash-upgrade-{suffix}"));
@@ -4592,7 +4618,10 @@ mod tests {
              INSERT INTO play_history(track_id,played_at) VALUES (1,456);",
         ).unwrap();
 
-        repair_physical_file_hashes(&conn, &data_dir).unwrap();
+        prepare_physical_hash_repair(&conn).unwrap();
+        assert_eq!(get_track_by_id(&conn, 1).unwrap().file_hash.as_deref(), Some("poisoned"));
+        index_file(&conn, &data_dir, &audio).unwrap();
+        index_file(&conn, &data_dir, &data_dir.join("missing.flac")).unwrap();
 
         let expected = hash_file(&audio).unwrap();
         let track = get_track_by_id(&conn, 1).unwrap();
@@ -4605,8 +4634,8 @@ mod tests {
         assert_eq!(track.date_added, Some(123));
         assert_eq!(conn.query_row("SELECT modified_secs FROM tracks WHERE id=1", [], |row| row.get::<_, i64>(0)).unwrap(), mtime);
         assert_eq!(get_track_by_id(&conn, 2).unwrap().file_hash.as_deref(), Some("virtual-identity"));
-        assert!(get_track_by_id(&conn, 3).unwrap().file_hash.is_none());
-        assert!(get_track_by_id(&conn, 3).unwrap().rarity.is_none());
+        assert_eq!(get_track_by_id(&conn, 3).unwrap().file_hash.as_deref(), Some("unverified"));
+        assert_eq!(get_track_by_id(&conn, 3).unwrap().rarity.as_deref(), Some("Mythic"));
         assert_eq!(conn.query_row("SELECT track_id FROM playlist_tracks", [], |row| row.get::<_, i64>(0)).unwrap(), 1);
         assert_eq!(conn.query_row("SELECT track_id FROM play_history", [], |row| row.get::<_, i64>(0)).unwrap(), 1);
         std::fs::remove_dir_all(data_dir).unwrap();
@@ -4623,7 +4652,8 @@ mod tests {
         let conn = Connection::open(&db).unwrap();
         init_schema(&conn).unwrap();
         conn.execute("INSERT INTO tracks(path,file_hash) VALUES ('song.flac','poisoned')", []).unwrap();
-        repair_physical_file_hashes(&conn, &data_dir).unwrap();
+        prepare_physical_hash_repair(&conn).unwrap();
+        index_file(&conn, &data_dir, &audio).unwrap();
         let repaired = get_track_by_id(&conn, 1).unwrap().file_hash;
         drop(conn);
 
@@ -4631,7 +4661,7 @@ mod tests {
         std::fs::remove_file(audio).unwrap();
         let conn = Connection::open(&db).unwrap();
         init_schema(&conn).unwrap();
-        repair_physical_file_hashes(&conn, &data_dir).unwrap();
+        prepare_physical_hash_repair(&conn).unwrap();
         assert_eq!(get_track_by_id(&conn, 1).unwrap().file_hash, repaired);
         assert!(repaired.is_some());
         drop(conn);
