@@ -4,10 +4,12 @@ export interface AppearancePreferences {
   reduceMotion: boolean;
   album3d: boolean;
   rarityAnimations: boolean;
+  footerSpectrum: boolean;
+  seekWaveform: boolean;
 }
 
 const STORAGE_KEY = 'player.appearance';
-const defaults: AppearancePreferences = { reduceMotion: false, album3d: true, rarityAnimations: true };
+const defaults: AppearancePreferences = { reduceMotion: false, album3d: true, rarityAnimations: true, footerSpectrum: true, seekWaveform: true };
 const preferences = reactive({ ...defaults });
 const storageError = ref('');
 const media = typeof window !== 'undefined' ? window.matchMedia?.('(prefers-reduced-motion: reduce)') : undefined;

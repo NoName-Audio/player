@@ -142,7 +142,7 @@ These screenshots were captured with the built-in demo mode. Click any image to 
 - Seek, pause, resume, stop, and volume control.
 - Output device and sample rate selection.
 - Queue with shuffle, repeat, and up-next, across lists of any length.
-- Beat detection and spectrum data for the visuals.
+- Beat detection and real-time audio spectrum above the controls footer, shared with the detail visuals; hidden while paused, seeking, in background tabs, or with reduced motion.
 
 ### Organization
 
@@ -176,9 +176,11 @@ These screenshots were captured with the built-in demo mode. Click any image to 
 - Now-playing view with a Three.js/WebGL album card.
 - Dark and light themes (or following the system) with a choice of accent color and header gradient.
 - Settings page for library tools, audio output, device identity and sync, Soulseek, and appearance (theme, accent color, gradient, tint, reduced motion).
+- Appearance includes independent **Footer live spectrum** and **Seek waveform** switches, both on by default and saved on this device. Disabling seek waveforms keeps ordinary played/unplayed seek progress and background waveform caching; reduced motion only pauses live/decorative visuals, not static seek waveforms.
 - Optional Discord Rich Presence on desktop, off by default.
 - About section with version info, update checks, an embedded changelog, contributors, and third-party licenses.
 - Demo mode with a seeded library (`--demo`), used for the screenshots above.
+- Seek bars use cached audio waveforms: indexing analyzes local audio into 256 absolute RMS-amplitude bins (mean energy across channels, without phase cancellation or per-bin normalization), persists them across restarts, and regenerates them when the source, track segment, or analysis algorithm changes. Existing libraries and older peak caches are backfilled in the background, prioritizing the selected track after the current source finishes. The player lazily requests only the selected track's cached waveform and refreshes it when analysis finishes; pending or unsupported waveforms show a neutral progress line instead. Narrow seek bars combine bins by mean energy to keep visible gaps between bars. Desktop, mobile, and track detail views support click/drag seeking and arrow keys, Home, and End; the visual is 19px high while mobile seek targets remain at least 44px.
 
 ## Desktop updates
 

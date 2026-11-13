@@ -1,6 +1,8 @@
 pub mod about;
 pub mod audio;
 mod audio_codecs;
+mod waveform;
+mod waveform_cache;
 pub mod covers;
 pub mod demo;
 pub mod discovery;
@@ -218,6 +220,7 @@ pub fn run() {
             plugins::plugin_current_source,
             library::search_tracks,
             library::get_all_tracks,
+            library::get_track_waveform,
             library::get_tracks_page,
             library::get_smart_playlist_tracks_page,
             library::get_smart_playlist_values,
