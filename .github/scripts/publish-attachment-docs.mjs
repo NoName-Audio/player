@@ -8,7 +8,7 @@ const path = 'docs/attachment-targets.md';
 const api = process.env.GITHUB_API_URL || 'https://api.github.com';
 
 async function request(repo, endpoint, { method = 'GET', body, missing = false } = {}) {
-  const response = await fetch(`${api}/repos/${repo}/${endpoint}`, {
+  const response = await fetch(`${api}/repos/${repo}${endpoint ? `/${endpoint}` : ''}`, {
     method,
     headers: {
       Authorization: `Bearer ${repo === target ? process.env.PLUGINS_TOKEN : process.env.API_TOKEN}`,
