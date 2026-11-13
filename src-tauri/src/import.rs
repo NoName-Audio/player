@@ -12,13 +12,14 @@ use tauri::Emitter;
 use walkdir::WalkDir;
 
 use crate::import_paths::{build_metadata_based_path, extract_audio_metadata};
-use crate::library::{index_file, is_audio_extension, is_cue_extension, LibraryState};
+use crate::library::{index_file, is_audio_extension, is_cue_extension, rel_path, LibraryState};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportResult {
     pub imported: usize,
     pub skipped: usize,
+    pub imported_track_ids: Vec<i64>,
 }
 
 /// Matches the `index-progress` payload emitted by library indexing so the
@@ -60,6 +61,7 @@ pub fn import_dropped_files(
     }
 
     let mut imported = 0usize;
+    let mut imported_track_ids: Vec<i64> = Vec::new();
     let mut skipped = 0usize;
     let total = sources.len();
 
@@ -139,6 +141,13 @@ pub fn import_dropped_files(
             if let Err(e) = index_file(&conn, &data_dir, &target) {
                 eprintln!("[import] failed to index {}: {}", target.display(), e);
             }
+            if let Ok(id) = conn.query_row(
+                "SELECT id FROM tracks WHERE path = ?1",
+                [rel_path(&data_dir, &target)],
+                |row| row.get::<_, i64>(0),
+            ) {
+                imported_track_ids.push(id);
+            }
         }
         imported += 1;
         emit_progress(
@@ -172,5 +181,5 @@ pub fn import_dropped_files(
         let _ = app.emit("library-changed", ());
     }
 
-    Ok(ImportResult { imported, skipped })
+    Ok(ImportResult { imported, skipped, imported_track_ids })
 }

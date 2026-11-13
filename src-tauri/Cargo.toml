@@ -58,6 +58,7 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 
 [target.'cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))'.dependencies]
 tauri-plugin-process = "2"
+tauri-plugin-dialog = "2"
 tauri-plugin-updater = "2"
 
 [patch.crates-io]
