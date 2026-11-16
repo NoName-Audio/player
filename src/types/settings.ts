@@ -6,6 +6,7 @@ export const SETTINGS_SECTIONS = [
   { id: 'devices', label: 'Devices & Sync', description: 'Device identity and local network', icon: 'network' },
   { id: 'plugins', label: 'Plugins', description: 'Install and manage extensions', icon: 'settings' },
   { id: 'appearance', label: 'Appearance', description: 'Motion, theme and colors', icon: 'appearance' },
+  { id: 'debug', label: 'Debug', description: 'Inspect and edit the indexing database', icon: 'settings' },
   { id: 'about', label: 'About', description: 'Version, updates and release notes', icon: 'info' },
 ] as const satisfies readonly { id: string; label: string; description: string; icon: AppIconName }[];
 
@@ -53,4 +54,14 @@ export interface AndroidUpdateStatus {
   downloaded: number;
   total: number;
   error?: string;
+}
+
+export type SqlValue = null | string | number | { type: 'blob'; base64: string };
+export interface DebugSqlResult {
+  columns: string[];
+  rows: SqlValue[][];
+  affectedRows: number;
+  readonly: boolean;
+  truncated: boolean;
+  elapsedMs: number;
 }

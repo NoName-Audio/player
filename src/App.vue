@@ -4131,8 +4131,9 @@ onUnmounted(() => {
         @nav-back="navBack"
         @nav-forward="navForward"
       >
-        <template v-if="activeNav === 'home'" #actions>
-          <button class="control-button control-button-compact import-files-action" @click="uploadFiles"><AppIcon name="folder" /> Add files</button>
+        <template v-if="activeNav === 'home' || (isSettingsNav && settingsSection === 'debug')" #actions>
+          <button v-if="activeNav === 'home'" class="control-button control-button-compact import-files-action" @click="uploadFiles"><AppIcon name="folder" /> Add files</button>
+          <div v-else id="debug-sql-header-actions" />
         </template>
         <template v-if="activeNav === 'playlists' && playlistTab === 'smart' && editingSP" #title>
           <input v-model="editingSP.name" class="page-title-input" aria-label="Playlist name" placeholder="Playlist name" @input="saveSP()" @click.stop />

@@ -23,6 +23,7 @@ import PluginPanel from '../plugins/components/PluginPanel.vue';
 import PluginImage from '../plugins/components/PluginImage.vue';
 import type { PluginManifest } from '../plugins/types';
 import type { AppIconName } from '../icons';
+import DebugSqlPanel from './DebugSqlPanel.vue';
 
 const props = defineProps<{
   section: SettingsSection | null;
@@ -297,6 +298,7 @@ onMounted(() => { void loadConfig(); });
             <p v-if="themeStorageError" class="error" role="alert">{{ themeStorageError }}</p>
           </div>
         </template>
+        <DebugSqlPanel v-else-if="selected === 'debug'" />
         <slot v-else-if="selected === 'about'" name="about" />
       </div>
     </div>
