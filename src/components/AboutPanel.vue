@@ -23,8 +23,9 @@ defineProps<{
   updateError: string;
   updateDone: string;
   androidUpdate: AndroidUpdateStatus | null;
+  autoCheck: boolean;
 }>();
-const emit = defineEmits<{ check: []; update: []; cancelUpdate: []; openRelease: []; openRepository: []; retry: []; openExternal: [url: string] }>();
+const emit = defineEmits<{ 'update:autoCheck': [value: boolean]; check: []; update: []; cancelUpdate: []; openRelease: []; openRepository: []; retry: []; openExternal: [url: string] }>();
 function openNoteLink(event: MouseEvent) {
   const link = (event.target as HTMLElement).closest('a');
   if (!link) return;
@@ -65,6 +66,7 @@ function openNoteLink(event: MouseEvent) {
       <p v-else-if="androidUpdate?.status === 'verifying'" role="status">Verifying the downloaded APK before installation.</p>
       <p v-else-if="androidUpdate?.status === 'permission'" role="status">Allow Player to install unknown apps in Android settings, then return here. Installation resumes automatically.</p>
       <p v-else-if="androidUpdate?.status === 'installing'" role="status">Continue in Android's package installer. Opening the installer does not confirm that the update was installed.</p>
+      <label class="check-option"><input type="checkbox" :checked="autoCheck" @change="emit('update:autoCheck', ($event.target as HTMLInputElement).checked)" /> Check for updates automatically</label>
       <p v-if="updateError" class="error" role="alert">{{ updateError }}</p>
       <p v-if="updateDone" role="status">{{ updateDone }}</p>
       <div v-if="status?.release_url" class="links">

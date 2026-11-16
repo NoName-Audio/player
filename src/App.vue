@@ -483,6 +483,22 @@ const aboutUpdating = ref(false);
 const aboutUpdateDone = ref('');
 const aboutUpdateProgress = ref<number | null>(null);
 const aboutDesktopUpdateReady = ref(false);
+const aboutDesktopUpdateDownloaded = ref(false);
+const updatePromptOpen = ref(false);
+const AUTO_UPDATE_KEY = 'player.autoUpdateChecks';
+const autoUpdateChecks = ref(true);
+try {
+  autoUpdateChecks.value = localStorage.getItem(AUTO_UPDATE_KEY) !== 'off';
+} catch {
+  autoUpdateChecks.value = true;
+}
+watch(autoUpdateChecks, (enabled) => {
+  try {
+    localStorage.setItem(AUTO_UPDATE_KEY, enabled ? 'on' : 'off');
+  } catch {
+    return;
+  }
+});
 let pendingDesktopUpdate: Update | null = null;
 const aboutAndroidUpdate = ref<AndroidUpdateStatus | null>(null);
 let aboutUpdatePollTimer: ReturnType<typeof setTimeout> | null = null;
@@ -525,6 +541,12 @@ async function cancelAboutUpdate() {
   }
   void refreshAndroidUpdateStatus();
 }
+let autoDownloading = false;
+let lastActivityAt = Date.now();
+let lastUpdateCheckAt = 0;
+let updateTimer: ReturnType<typeof setInterval> | null = null;
+const UPDATE_RECHECK_MS = 6 * 60 * 60_000;
+const UPDATE_IDLE_MS = 2 * 60_000;
 
 const supportsTauriUpdater = computed(() => (
   aboutInfo.value !== null
@@ -3187,7 +3209,11 @@ function scheduleInitialAppDataLoad() {
     requestAnimationFrame(() => {
       void loadAppData('mount');
       // silent update check — no blocking UI, populates aboutUpdateStatus in background
-      setTimeout(() => { void checkAboutUpdates(); }, 3000);
+      setTimeout(async () => {
+        if (!autoUpdateChecks.value) return;
+        await checkAboutUpdates();
+        if (hasAvailableUpdate.value) updatePromptOpen.value = true;
+      }, 3000);
     });
   });
 }
@@ -3249,6 +3275,8 @@ async function checkAboutUpdates() {
   aboutUpdateError.value = '';
   aboutUpdateDone.value = '';
   aboutDesktopUpdateReady.value = false;
+  aboutDesktopUpdateDownloaded.value = false;
+  lastUpdateCheckAt = Date.now();
 
   try {
     if (supportsTauriUpdater.value) {
@@ -3301,6 +3329,41 @@ async function checkAboutUpdates() {
   }
 }
 
+function markActivity() {
+  lastActivityAt = Date.now();
+}
+
+async function autoDownloadUpdate() {
+  const update = pendingDesktopUpdate;
+  if (!update || aboutDesktopUpdateDownloaded.value || autoDownloading || aboutUpdating.value) return;
+  if (isPlaying.value || Date.now() - lastActivityAt < UPDATE_IDLE_MS) return;
+  autoDownloading = true;
+  try {
+    await update.download(undefined, { timeout: 5 * 60_000 });
+    if (pendingDesktopUpdate === update) {
+      aboutDesktopUpdateDownloaded.value = true;
+      aboutUpdateDone.value = `Version ${update.version} is downloaded. Press Update now to restart and install it.`;
+    }
+  } catch (error) {
+    console.error('Background update download failed:', error);
+  } finally {
+    autoDownloading = false;
+  }
+}
+
+function backgroundUpdateTick() {
+  if (!autoUpdateChecks.value || !supportsTauriUpdater.value) return;
+  if (!pendingDesktopUpdate && !aboutCheckingUpdates.value && Date.now() - lastUpdateCheckAt >= UPDATE_RECHECK_MS) {
+    void checkAboutUpdates();
+  }
+  void autoDownloadUpdate();
+}
+
+async function updateFromPrompt() {
+  await doAboutUpdate();
+  if (!aboutUpdateError.value) updatePromptOpen.value = false;
+}
+
 async function openAboutDownloadLink() {
   const url = aboutUpdateStatus.value?.release_url;
   if (!url) return;
@@ -3321,6 +3384,11 @@ async function doAboutUpdate() {
       return;
     }
 
+    if (autoDownloading) {
+      aboutUpdateError.value = 'The update is downloading in the background. Try again in a moment.';
+      return;
+    }
+
     aboutUpdating.value = true;
     aboutUpdateDone.value = '';
     aboutUpdateError.value = '';
@@ -3329,7 +3397,9 @@ async function doAboutUpdate() {
     let total: number | undefined;
 
     try {
-      await update.downloadAndInstall((event) => {
+      if (aboutDesktopUpdateDownloaded.value) {
+        await update.install();
+      } else await update.downloadAndInstall((event) => {
         if (event.event === 'Started') {
           total = event.data.contentLength;
           aboutUpdateProgress.value = 0;
@@ -3345,6 +3415,7 @@ async function doAboutUpdate() {
 
       pendingDesktopUpdate = null;
       aboutDesktopUpdateReady.value = false;
+      aboutDesktopUpdateDownloaded.value = false;
       aboutUpdateDone.value = 'Update installed. Restarting…';
       await relaunch();
     } catch (error) {
@@ -3820,6 +3891,8 @@ onMounted(() => {
   void loadAbout();
   document.addEventListener('click', onDocClick);
   document.addEventListener('keydown', onKeyDown);
+  for (const name of ['pointerdown', 'pointermove', 'keydown', 'wheel']) window.addEventListener(name, markActivity, { passive: true });
+  updateTimer = setInterval(backgroundUpdateTick, 60_000);
   window.addEventListener('focus', onWindowFocus);
   window.addEventListener('pagehide', savePlaybackContext);
   playbackRestorePromise = restorePlaybackSession();
@@ -4065,6 +4138,8 @@ onUnmounted(() => {
   document.documentElement.classList.remove('player-reduced-motion', 'player-no-rarity-motion');
   document.removeEventListener('click', onDocClick);
   document.removeEventListener('keydown', onKeyDown);
+  for (const name of ['pointerdown', 'pointermove', 'keydown', 'wheel']) window.removeEventListener(name, markActivity);
+  if (updateTimer) clearInterval(updateTimer);
   savePlaybackContext();
   clearTimeout(playbackContextSaveTimer);
   window.removeEventListener('pagehide', savePlaybackContext);
@@ -4873,7 +4948,7 @@ onUnmounted(() => {
               <AboutPanel :info="aboutInfo" :loading="aboutLoading" :error="aboutError" :status="aboutUpdateStatus"
                 :checking="aboutCheckingUpdates" :updating="aboutUpdating" :progress="aboutUpdateProgress"
                 :desktop-ready="aboutDesktopUpdateReady" :update-error="aboutUpdateError" :update-done="aboutUpdateDone"
-                :android-update="aboutAndroidUpdate" @cancel-update="cancelAboutUpdate"
+                :android-update="aboutAndroidUpdate" :auto-check="autoUpdateChecks" @update:auto-check="autoUpdateChecks = $event" @cancel-update="cancelAboutUpdate"
                 @check="checkAboutUpdates" @update="doAboutUpdate" @open-release="openAboutDownloadLink"
                 @open-repository="openUrl('https://github.com/' + (aboutInfo?.release_repo || 'NoName-Audio/player'))"
                 @retry="loadAbout(true)" @open-external="openUrl" />
@@ -4971,6 +5046,30 @@ onUnmounted(() => {
         </button>
       </template>
     </ResponsivePopup>
+
+    <Transition name="modal">
+      <div v-if="updatePromptOpen" class="modal-overlay" @click.self="updatePromptOpen = false">
+        <div class="modal update-prompt-modal">
+          <div class="modal-header">
+            <h3>Update available</h3>
+            <button class="icon-btn" @click="updatePromptOpen = false">
+              <AppIcon name="close" :size="18" />
+            </button>
+          </div>
+          <div class="modal-body">
+            <p class="modal-copy">Version {{ aboutUpdateStatus?.latest_version }} of Player is available. Do you want to update now?</p>
+            <label class="check-option"><input v-model="autoUpdateChecks" type="checkbox" :true-value="false" :false-value="true" /> Don't check for updates automatically</label>
+            <p v-if="aboutUpdateError" class="error" role="alert">{{ aboutUpdateError }}</p>
+          </div>
+          <div class="modal-footer">
+            <button class="control-button" @click="updatePromptOpen = false">Later</button>
+            <button class="control-button control-button-primary" :disabled="aboutUpdating" :aria-busy="aboutUpdating" @click="updateFromPrompt()">
+              {{ aboutUpdating ? (aboutUpdateProgress !== null ? `Downloading ${aboutUpdateProgress}%` : 'Downloading…') : 'Update now' }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Transition>
 
     <ResponsivePopup
       :open="addSongsOpen"
@@ -6216,6 +6315,7 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: var(--spa
 }
 .field input:focus { outline: 1px solid var(--color-accent); }
 .edit-track-modal { width: 460px; }
+.update-prompt-modal { width: 340px; background: var(--color-bg); }
 .edit-track-body {
   max-height: min(70vh, 560px);
   overflow-y: auto;

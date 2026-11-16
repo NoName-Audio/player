@@ -22,3 +22,21 @@
 
 .form-input:disabled { opacity: .5; }
 .form-input:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 3px; }
+
+.check-option { display: flex; align-items: center; gap: 8px; color: var(--color-text-muted); font-size: var(--fs-body-sm); cursor: pointer; }
+.check-option input {
+  appearance: none;
+  -webkit-appearance: none;
+  flex-shrink: 0;
+  display: grid; place-content: center;
+  width: 16px; height: 16px; margin: 0;
+  border: 1.5px solid var(--color-border-strong); border-radius: 4px;
+  background: transparent; cursor: pointer;
+}
+.check-option input:checked { background: var(--color-accent); border-color: var(--color-accent); }
+.check-option input:checked::after {
+  content: ''; width: 4px; height: 8px; margin-top: -1px;
+  border: solid var(--color-on-accent); border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+.check-option input:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
