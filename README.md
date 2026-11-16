@@ -420,6 +420,23 @@ Opus library is required on the user's device.
 pnpm tauri build
 ```
 
+#### Linux AppImage and Wayland
+
+Release AppImages are built on Ubuntu 22.04. Their bundled copy of `libwayland-client`
+is older than the Mesa drivers on current distributions such as Arch and Garuda, which
+leaves the window grey and prints `Could not create default EGL display: EGL_BAD_PARAMETER`.
+The release workflow therefore removes `libwayland-*` from the AppImage, so the system
+libraries are used, and signs the repacked file again for the updater.
+
+To check a downloaded AppImage, run it from a terminal and look for the EGL message.
+If an older release is affected, start it with the system libraries:
+
+```bash
+LD_PRELOAD="/usr/lib/libwayland-client.so.0:/usr/lib/libwayland-egl.so.1" ./player-linux-x86_64.AppImage
+```
+
+The library paths differ between distributions.
+
 Frontend builds refresh the About contributor list from GitHub and bundle their
 avatars, so the credits also work offline. If GitHub is unavailable, the build
 uses the saved snapshot in `src/generated/contributors.json` and

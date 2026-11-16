@@ -69,7 +69,8 @@ jobs:
             libwebkit2gtk-4.1-dev \
             libappindicator3-dev \
             librsvg2-dev \
-            patchelf
+            patchelf \
+            squashfs-tools
 
       - name: Set up pnpm
         uses: pnpm/action-setup@v5
@@ -111,6 +112,23 @@ jobs:
           CI: 'true'
           GITHUB_TOKEN: ${{ github.token }}
         run: pnpm tauri build
+
+      - name: Use system Wayland libraries in the AppImage
+        if: matrix.os == 'ubuntu-22.04'
+        shell: bash
+        run: |
+          set -euo pipefail
+          appimage="$(realpath "$(find src-tauri/target/release/bundle/appimage -maxdepth 1 -name '*.AppImage' -print -quit)")"
+          work="$(mktemp -d)"
+          chmod +x "$appimage"
+          head -c "$("$appimage" --appimage-offset)" "$appimage" > "$work/runtime"
+          (cd "$work" && "$appimage" --appimage-extract > /dev/null)
+          rm -f "$work"/squashfs-root/usr/lib/libwayland-*
+          mksquashfs "$work/squashfs-root" "$work/image.squashfs" -root-owned -noappend -comp gzip
+          cat "$work/runtime" "$work/image.squashfs" > "$appimage"
+          chmod +x "$appimage"
+          rm -f "$appimage.sig"
+          pnpm tauri signer sign "$appimage"
 
       - name: Build Tauri universal macOS bundles
         if: matrix.name == 'macos'
