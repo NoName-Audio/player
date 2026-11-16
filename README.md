@@ -206,6 +206,23 @@ does not open a permission prompt from the background.
 - Demo mode with a seeded library (`--demo`), used for the screenshots above.
 - Seek bars use cached audio waveforms: indexing analyzes local audio into 256 absolute RMS-amplitude bins (mean energy across channels, without phase cancellation or per-bin normalization), persists them across restarts, and regenerates them when the source, track segment, or analysis algorithm changes. Existing libraries and older peak caches are backfilled in the background, prioritizing the selected track after the current source finishes. The player lazily requests only the selected track's cached waveform and refreshes it when analysis finishes; pending or unsupported waveforms show a neutral progress line instead. Narrow seek bars combine bins by mean energy to keep visible gaps between bars. Desktop, mobile, and track detail views support click/drag seeking and arrow keys, Home, and End; the visual is 19px high while mobile seek targets remain at least 44px.
 
+### Debug SQL
+
+Settings → Debug includes a SQL editor for the live indexing database. Run one
+SQLite statement at a time; read-only statements run immediately, while writes
+(including `UPDATE`, `DELETE`, and schema changes) require explicit confirmation.
+Changes commit atomically and refresh library views without automatically
+reindexing or undoing the edits. Back up the database before destructive changes.
+
+Execution has a five-second deadline, including waiting for the library database,
+and returns at most 1,000 rows within a 4 MiB result budget. Truncated write results
+still execute the entire statement; errors and timeouts roll the statement back.
+SQL input is limited to 256 KiB and individual SQLite values to 4 MiB. Blobs are
+shown as base64 objects; integers outside JavaScript's safe range are strings.
+This is a trusted local tool, not a plugin permission. Explicit transactions,
+attached databases, virtual-table creation, extension/file functions, and unsafe
+PRAGMAs are blocked. Schema-introspection PRAGMAs remain available.
+
 ## Desktop updates
 
 Windows, macOS, and Linux releases use the signed Tauri Updater flow. Release builds publish

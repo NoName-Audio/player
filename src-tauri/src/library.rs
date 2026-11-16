@@ -213,6 +213,10 @@ pub struct LibraryState {
     conn: Arc<Mutex<Connection>>,
     pub data_dir: PathBuf,
 }
+    pub(crate) fn debug_connection(&self) -> Arc<Mutex<Connection>> {
+        Arc::clone(&self.conn)
+    }
+
 
 impl LibraryState {
     /// Sets up the library subsystem:

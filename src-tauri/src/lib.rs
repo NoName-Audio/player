@@ -12,6 +12,7 @@ pub mod identify;
 pub mod import;
 mod import_paths;
 mod indexing_service;
+mod debug_sql;
 pub mod library;
 pub mod playback;
 pub mod plugin_sources;
@@ -248,6 +249,7 @@ pub fn run() {
             plugins::plugin_call,
             plugins::plugin_play_source,
             plugins::plugin_current_source,
+            debug_sql::debug_execute_sql,
             library::search_tracks,
             library::get_all_tracks,
             library::get_track_waveform,
