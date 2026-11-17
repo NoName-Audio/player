@@ -498,3 +498,24 @@ If you want the full descriptive architecture document, read [DESIGN.md](./DESIG
 
 See [the plugin guide](https://github.com/NoName-Audio/player-plugins/blob/main/docs/README.md) for package installation, the SDK,
 UI contributions, native capabilities and development workflows.
+
+Installed package payloads are immutable, fingerprint-addressed files under the
+plugin store's `packages/` directory. The registry stores only package references,
+activation generations, settings, and secret-key names, so granting permissions or
+changing settings does not rewrite bundled native runtimes. Existing inline-package
+registries are migrated on load; the registry switches to references on its next
+successful change, while its previous backup remains recoverable.
+
+Native `.player-plugin` artifacts may include a `files` map of flat runtime filenames,
+each containing base64 `data`, `sha256`, and an `executable` flag. The host verifies
+the library and runtime hashes before enabling the plugin, and repairs modified files
+before loading a new activation. Files live beside `plugin.<platform extension>` in
+the private, package-fingerprinted native directory; executables are owner-readable
+and executable, other files owner-readable only. Native libraries can request
+`runtime.directory` to obtain `{ "path": "..." }` without an additional permission.
+The call is scoped to the enabled activation generation and unavailable to APKs or
+the frontend service dispatcher. Plugins must use these absolute paths, not PATH or
+external installation/settings paths. Runtime names cannot contain directories,
+Windows device names, library filename collisions, or case-insensitive duplicates.
+Limits are 64 MiB per library, 256 MiB per runtime file, 384 MiB of runtime files per
+target, and 768 MiB per package; large releases should publish target-specific packages.

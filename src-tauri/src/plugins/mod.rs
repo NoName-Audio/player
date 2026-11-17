@@ -6,6 +6,7 @@ pub mod native;
 mod remote;
 pub(crate) mod secrets;
 mod store;
+mod staging;
 use model::{InstallSource, Package, PluginInfo};
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::{json, Value};
@@ -92,31 +93,52 @@ pub fn plugins_list(state: tauri::State<'_, PluginState>) -> Result<Vec<PluginIn
     state.list()
 }
 #[tauri::command]
-pub fn plugins_preview(content: String) -> Result<Value, String> {
-    let p = Package::parse(&content)?;
-    Ok(json!({"manifest":p.manifest,"fingerprint":p.fingerprint()}))
+pub async fn plugins_preview(content: String) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = Package::parse(&content)?;
+        Ok(json!({"manifest":p.manifest,"fingerprint":p.fingerprint()}))
+    }).await.map_err(|e| e.to_string())?
+}
+#[tauri::command]
+pub async fn plugins_preview_path(path: String) -> Result<staging::Preview, String> {
+    tauri::async_runtime::spawn_blocking(move || staging::read_path(path)).await.map_err(|e| e.to_string())?
+}
+#[tauri::command]
+pub async fn plugins_discard_preview(token: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || staging::discard(&token)).await.map_err(|e| e.to_string())?
 }
 #[tauri::command]
 pub async fn plugins_download(
     url: String,
     expected_id: Option<String>,
-) -> Result<remote::DownloadPreview, String> {
+) -> Result<staging::Preview, String> {
     let preview = remote::download(&url).await?;
     preview.verify_id(expected_id.as_deref())?;
-    Ok(preview)
+    tauri::async_runtime::spawn_blocking(move || {
+        staging::stage(preview.package, Some(preview.source))
+    }).await.map_err(|e| e.to_string())?
 }
 #[tauri::command]
 pub async fn plugins_catalog() -> Result<catalog::Listing, String> {
     catalog::load().await
 }
 #[tauri::command]
-pub fn plugins_install(
-    content: String,
+pub async fn plugins_install(
+    content: Option<String>,
+    token: Option<String>,
     fingerprint: String,
     source: Option<InstallSource>,
-    state: tauri::State<'_, PluginState>,
+    app: tauri::AppHandle,
 ) -> Result<PluginInfo, String> {
-    state.install(&content, &fingerprint, source)
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<PluginState>();
+        if let Some(token) = token {
+            let staged = staging::take(&token, &fingerprint)?;
+            state.install_package(staged.package, &fingerprint, staged.source)
+        } else {
+            state.install(&content.ok_or("Missing plugin package")?, &fingerprint, source)
+        }
+    }).await.map_err(|e| e.to_string())?
 }
 #[tauri::command]
 pub fn plugins_uninstall(
@@ -150,8 +172,14 @@ pub async fn plugins_set_enabled(
     state: tauri::State<'_, PluginState>,
 ) -> Result<PluginInfo, String> {
     // Persist revocation first: a concurrent operation cannot obtain fresh capabilities.
-    let previous_generation = state.record(&plugin_id)?.generation;
-    let info = state.enabled(&plugin_id, enabled)?;
+    let handle = app.clone();
+    let id = plugin_id.clone();
+    let (previous_generation, info) = tauri::async_runtime::spawn_blocking(move || {
+        let state = handle.state::<PluginState>();
+        let previous_generation = state.record(&id)?.generation;
+        let info = state.enabled(&id, enabled)?;
+        Ok::<_, String>((previous_generation, info))
+    }).await.map_err(|e| e.to_string())??;
     if !enabled {
         let handle = app.clone();
         let id = plugin_id.clone();

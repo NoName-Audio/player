@@ -22,6 +22,7 @@ type Call = unsafe extern "C" fn(*mut c_void, *const u8, usize, HostApi) -> Buff
 type Free = unsafe extern "C" fn(Buffer);
 struct LibraryInstance {
     _library: Arc<libloading::Library>,
+    directory: std::path::PathBuf,
     instance: *mut c_void,
     call: Call,
     free: Free,
@@ -53,6 +54,7 @@ struct Context {
     app: tauri::AppHandle,
     id: String,
     generation: u64,
+    directory: Option<std::path::PathBuf>,
 }
 struct Reply {
     id: String,
@@ -97,6 +99,11 @@ impl Context {
 impl Host for Context {
     fn call(&self, method: &str, args: Value) -> PluginResult {
         self.active()?;
+        if method == "runtime.directory" {
+            let path = self.directory.as_ref().ok_or("Runtime directory is only available to native libraries")?;
+            self.active()?;
+            return Ok(json!({"path": path}));
+        }
         if method == "host.invalidate" {
             let _ = self.app.emit(
                 "plugin-invalidated",
@@ -190,6 +197,90 @@ unsafe extern "C" fn host_call(context: *mut c_void, request: *const u8, len: us
     .unwrap_or_else(|_| Err("Native host callback panicked".into()));
     Buffer::new(player_plugin_sdk::encode(result))
 }
+fn ensure_real_directory(path: &std::path::Path) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        if parent != path && !parent.as_os_str().is_empty() { ensure_real_directory(parent)?; }
+    }
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() => Ok(()),
+        Ok(_) => Err("Native runtime path is not a real directory".into()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound =>
+            std::fs::create_dir(path).map_err(|e| e.to_string()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+fn runtime_contents_match(path: &std::path::Path, bytes: &[u8]) -> bool {
+    use std::io::Read;
+    let Ok(mut file) = std::fs::File::open(path) else { return false; };
+    let mut buffer = [0u8; 64 * 1024];
+    let mut remaining = bytes;
+    while !remaining.is_empty() {
+        let length = remaining.len().min(buffer.len());
+        if file.read_exact(&mut buffer[..length]).is_err() || buffer[..length] != remaining[..length] {
+            return false;
+        }
+        remaining = &remaining[length..];
+    }
+    matches!(file.read(&mut buffer[..1]), Ok(0))
+}
+fn install_runtime_file(path: &std::path::Path, bytes: &[u8], executable: bool) -> Result<(), String> {
+    use std::io::Write;
+    let matches = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata.file_type().is_file() && !metadata.file_type().is_symlink()
+            && metadata.len() == bytes.len() as u64 && runtime_contents_match(path, bytes),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => return Err(error.to_string()),
+    };
+    if !matches {
+        let temporary = path.parent().ok_or("Missing runtime directory")?.join(format!(".runtime-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+        let result = (|| {
+            let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&temporary).map_err(|e| e.to_string())?;
+            file.write_all(bytes).map_err(|e| e.to_string())?;
+            file.sync_all().map_err(|e| e.to_string())?;
+            drop(file);
+            runtime_permissions(&temporary, executable)?;
+            #[cfg(windows)]
+            if let Ok(metadata) = std::fs::symlink_metadata(path) {
+                if metadata.file_type().is_file() {
+                    let mut permissions = metadata.permissions();
+                    permissions.set_readonly(false);
+                    std::fs::set_permissions(path, permissions).map_err(|e| e.to_string())?;
+                }
+                std::fs::remove_file(path).map_err(|e| e.to_string())?;
+            }
+            std::fs::rename(&temporary, path).map_err(|e| e.to_string())
+        })();
+        if result.is_err() { let _ = std::fs::remove_file(&temporary); }
+        result?;
+    }
+    runtime_permissions(path, executable)
+}
+fn runtime_permissions(path: &std::path::Path, executable: bool) -> Result<(), String> {
+    #[cfg(unix)]
+    let permissions = {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::Permissions::from_mode(if executable { 0o500 } else { 0o400 })
+    };
+    #[cfg(not(unix))]
+    let permissions = {
+        let _ = executable;
+        let mut permissions = std::fs::metadata(path).map_err(|e| e.to_string())?.permissions();
+        permissions.set_readonly(true);
+        permissions
+    };
+    std::fs::set_permissions(path, permissions).map_err(|e| e.to_string())
+}
+pub(super) fn extract_artifact(root: &std::path::Path, artifact: &super::model::NativeArtifact) -> Result<(), String> {
+    // Each payload is decoded and hash-verified below; only preflight names/sizes here.
+    artifact.validate_file_layout()?;
+    ensure_real_directory(root)?;
+    let root = std::fs::canonicalize(root).map_err(|e| e.to_string())?;
+    install_runtime_file(&root.join(format!("plugin.{}", std::env::consts::DLL_EXTENSION)), &artifact.decode()?, true)?;
+    for (name, file) in &artifact.files {
+        install_runtime_file(&root.join(name), &file.decode()?, file.executable)?;
+    }
+    Ok(())
+}
 fn library(
     app: &tauri::AppHandle,
     package: &Package,
@@ -198,27 +289,15 @@ fn library(
     let NativePackage::Library { artifacts } = &package.native else {
         return Err("Missing native artifacts".into());
     };
-    let bytes = artifacts
-        .get(&native_target())
-        .ok_or("No native library for this platform and architecture")?
-        .decode()?;
-    let root = app
-        .state::<PluginState>()
-        .root
-        .join("native")
-        .join(&package.manifest.id)
-        .join(fingerprint);
-    std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
+    let artifact = artifacts.get(&native_target())
+        .ok_or("No native library for this platform and architecture")?;
+    // The application data root is trusted; OS ancestors may legitimately be symlinks
+    // (for example /var on macOS). Validate only the private native subtree below it.
+    let base = std::fs::canonicalize(&app.state::<PluginState>().root).map_err(|e| e.to_string())?;
+    let root = base.join("native").join(&package.manifest.id).join(fingerprint);
+    extract_artifact(&root, artifact)?;
+    let root = std::fs::canonicalize(&root).map_err(|e| e.to_string())?;
     let path = root.join(format!("plugin.{}", std::env::consts::DLL_EXTENSION));
-    if std::fs::read(&path).ok().as_deref() != Some(&bytes) {
-        super::store::write_atomic(&path, &bytes)?;
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))
-            .map_err(|e| e.to_string())?;
-    }
     // No library is opened during preview or installation: only after explicit enable.
     unsafe {
         let library = Arc::new(
@@ -261,6 +340,7 @@ fn library(
             .push(library.clone());
         Ok(Backend::Library(LibraryInstance {
             _library: library,
+            directory: root,
             instance,
             call,
             free,
@@ -355,8 +435,7 @@ fn dispatch(
                 let binding = context
                     .app
                     .state::<PluginState>()
-                    .package(&context.id)?
-                    .manifest
+                    .manifest(&context.id)?
                     .android_native
                     .ok_or("Missing APK binding")?;
                 let token = NEXT.fetch_add(1, Ordering::Relaxed);
@@ -449,6 +528,7 @@ pub async fn plugin_native_call(
             app: app.clone(),
             id: plugin_id.clone(),
             generation,
+            directory: None,
         };
         context.active()?;
         validate_attachment_scope(
@@ -466,7 +546,7 @@ pub async fn plugin_native_call(
                     return Err("Native plugin is not active".into());
                 }
                 let package = app.state::<PluginState>().package(&plugin_id)?;
-                let fingerprint = package.fingerprint();
+                let fingerprint = app.state::<PluginState>().info(&plugin_id)?.fingerprint;
                 let entry = Arc::new(Mutex::new(Activation {
                     generation,
                     backend: backend(&app, &package, &fingerprint)?,
@@ -480,6 +560,9 @@ pub async fn plugin_native_call(
         context.active()?;
         if activation.generation != generation {
             return Err("Stale native activation; disable and enable the plugin".into());
+        }
+        if let Backend::Library(library) = &activation.backend {
+            context.directory = Some(library.directory.clone());
         }
         if method == "activate" && activation.initialized {
             return Ok(Value::Null);
@@ -525,6 +608,10 @@ pub fn stop(app: &tauri::AppHandle, id: &str, generation: u64) {
                 app: app.clone(),
                 id: id.into(),
                 generation,
+                directory: match &activation.backend {
+                    Backend::Library(library) => Some(library.directory.clone()),
+                    Backend::Android => None,
+                },
             };
             if !matches!(activation.backend, Backend::Android)
                 || !runtime.closing.load(Ordering::Acquire)
@@ -573,6 +660,61 @@ pub fn plugin_native_reply(
         None => Ok(result.unwrap_or(Value::Null)),
     });
     Ok(())
+}
+
+#[cfg(test)]
+mod runtime_file_tests {
+    use super::*;
+    use super::super::model::{NativeArtifact, RuntimeFile};
+
+    fn artifact() -> NativeArtifact {
+        let hash = "ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb";
+        NativeArtifact {
+            data: "YQ==".into(), sha256: hash.into(),
+            files: [("yt-dlp".into(), RuntimeFile { data: "YQ==".into(), sha256: hash.into(), executable: true }),
+                ("config.json".into(), RuntimeFile { data: "YQ==".into(), sha256: hash.into(), executable: false })].into(),
+        }
+    }
+    fn root() -> std::path::PathBuf {
+        std::fs::canonicalize(std::env::temp_dir()).unwrap().join(format!("player-runtime-files-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)))
+    }
+    #[test]
+    fn extracts_and_repairs_tampering_with_private_permissions() {
+        let root = root();
+        let artifact = artifact();
+        extract_artifact(&root, &artifact).unwrap();
+        assert_eq!(std::fs::read(root.join("yt-dlp")).unwrap(), b"a");
+        assert_eq!(std::fs::read(root.join(format!("plugin.{}", std::env::consts::DLL_EXTENSION))).unwrap(), b"a");
+        #[cfg(unix)] {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(root.join("yt-dlp")).unwrap().permissions().mode() & 0o777, 0o500);
+            assert_eq!(std::fs::metadata(root.join("config.json")).unwrap().permissions().mode() & 0o777, 0o400);
+        }
+        std::fs::remove_file(root.join("yt-dlp")).unwrap();
+        std::fs::write(root.join("yt-dlp"), b"tampered").unwrap();
+        extract_artifact(&root, &artifact).unwrap();
+        assert_eq!(std::fs::read(root.join("yt-dlp")).unwrap(), b"a");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[cfg(unix)]
+    #[test]
+    fn replaces_file_symlinks_without_touching_target_and_rejects_directory_symlinks() {
+        use std::os::unix::fs::symlink;
+        let root = root();
+        let outside = root.with_extension("outside");
+        std::fs::write(&outside, b"outside").unwrap();
+        std::fs::create_dir(&root).unwrap();
+        symlink(&outside, root.join("yt-dlp")).unwrap();
+        extract_artifact(&root, &artifact()).unwrap();
+        assert_eq!(std::fs::read(&outside).unwrap(), b"outside");
+        assert!(!std::fs::symlink_metadata(root.join("yt-dlp")).unwrap().file_type().is_symlink());
+        let alias = root.with_extension("alias");
+        symlink(&root, &alias).unwrap();
+        assert!(extract_artifact(&alias, &artifact()).is_err());
+        std::fs::remove_file(alias).unwrap();
+        std::fs::remove_file(outside).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }
 #[cfg(target_os = "android")]
 #[no_mangle]

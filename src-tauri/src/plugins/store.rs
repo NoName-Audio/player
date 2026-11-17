@@ -5,13 +5,20 @@ use std::{
     collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{Arc, Mutex},
 };
 
-#[derive(Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Default)]
 struct Registry {
+    packages: BTreeMap<String, Arc<Package>>,
+    fingerprints: BTreeMap<String, String>,
+    records: BTreeMap<String, Record>,
+}
+
+#[derive(Default, Serialize, Deserialize)]
+struct PersistedRegistry {
     #[serde(default)]
-    packages: BTreeMap<String, Package>,
+    packages: BTreeMap<String, String>,
     #[serde(default)]
     records: BTreeMap<String, Record>,
 }
@@ -27,6 +34,7 @@ pub struct PluginState {
     pub warnings: Vec<String>,
     pub(super) secrets: std::sync::Arc<super::secrets::SecretCache>,
     inner: Mutex<Registry>,
+    writer: Mutex<()>,
     sources: Mutex<BTreeMap<String, SourceGrant>>,
     events: Mutex<BTreeMap<String, Value>>,
     sequence: std::sync::atomic::AtomicU64,
@@ -86,7 +94,7 @@ impl PluginState {
                     let mut removed=Vec::new();
                     if let Some(packages)=value["packages"].as_object_mut() {
                         packages.retain(|id,p| {
-                            let native=p.get("native").is_some();
+                            let native=p.is_string() || p.get("native").is_some();
                             if !native {removed.push(id.clone());warnings.push(format!("Removed legacy JavaScript plugin {id}; install a native version"));}
                             native
                         });
@@ -94,7 +102,46 @@ impl PluginState {
                     for id in removed {
                         if let Some(record)=value["records"].get_mut(&id) {record["enabled"]=json!(false);}
                     }
-                    serde_json::from_value::<Registry>(value).map_err(|e|e.to_string())
+                    let mut registry = Registry::default();
+                    registry.records = serde_json::from_value(value.get_mut("records").map(Value::take).unwrap_or_else(|| json!({})))
+                        .map_err(|e| e.to_string())?;
+                    if let Some(packages) = value["packages"].as_object_mut() {
+                        for (id, entry) in packages {
+                            let loaded = (|| -> Result<(Package, String), String> {
+                                let package = if let Some(fingerprint) = entry.as_str() {
+                                    if fingerprint.len() != 64 || !fingerprint.bytes().all(|b| b.is_ascii_hexdigit()) {
+                                        return Err("Invalid package fingerprint".into());
+                                    }
+                                    let path = root.join("packages").join(format!("{fingerprint}.json"));
+                                    if fs::metadata(&path).map_err(|e| e.to_string())?.len() > MAX_PACKAGE_BYTES as u64 {
+                                        return Err("Package is too large".into());
+                                    }
+                                    Package::parse(&fs::read_to_string(path).map_err(|e| e.to_string())?)?
+                                } else {
+                                    let package: Package = serde_json::from_value(entry.take()).map_err(|e| e.to_string())?;
+                                    package.validate()?;
+                                    package
+                                };
+                                if package.manifest.id != *id {
+                                    return Err("Package identity mismatch".into());
+                                }
+                                let fingerprint = package.fingerprint();
+                                if entry.as_str().is_some_and(|expected| expected != fingerprint) {
+                                    return Err("Package fingerprint mismatch".into());
+                                }
+                                Self::persist_package(&root, &package, &fingerprint)?;
+                                Ok((package, fingerprint))
+                            })();
+                            match loaded {
+                                Ok((package, fingerprint)) => {
+                                    registry.packages.insert(id.clone(), Arc::new(package));
+                                    registry.fingerprints.insert(id.clone(), fingerprint);
+                                }
+                                Err(error) => warnings.push(format!("Ignored invalid installed package {id}: {error}")),
+                            }
+                        }
+                    }
+                    Ok(registry)
                 });
             match loaded {
                 Ok(registry) => {
@@ -116,13 +163,7 @@ impl PluginState {
                 }
             }
         }
-        inner.packages.retain(|id, p| {
-            let valid = p.validate().is_ok() && id == &p.manifest.id;
-            if !valid {
-                warnings.push(format!("Ignored invalid installed package {id}"));
-            }
-            valid
-        });
+        // Payloads are validated once while loading; normal metadata reads never decode them.
         for (id, record) in inner.records.iter_mut() {
             if !inner.packages.contains_key(id) {
                 record.enabled = false;
@@ -136,24 +177,39 @@ impl PluginState {
             warnings,
             secrets: std::sync::Arc::new(super::secrets::SecretCache::default()),
             inner: Mutex::new(inner),
+            writer: Mutex::new(()),
             sources: Mutex::new(BTreeMap::new()),
             events: Mutex::new(BTreeMap::new()),
             sequence: std::sync::atomic::AtomicU64::new(1),
         })
     }
-    fn change<T>(&self, f: impl FnOnce(&mut Registry) -> Result<T, String>) -> Result<T, String> {
-        let mut guard = self.inner.lock().map_err(|e| e.to_string())?;
-        let mut next = guard.clone();
-        let result = f(&mut next)?;
-        let bytes = serde_json::to_vec(&next).map_err(|e| e.to_string())?;
-        if bytes.len() > 512 * 1024 * 1024 {
-            return Err("Installed native packages exceed the registry size limit".into());
+    fn persist_package(root: &Path, package: &Package, fingerprint: &str) -> Result<(), String> {
+        let directory = root.join("packages");
+        fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
+        let path = directory.join(format!("{fingerprint}.json"));
+        if !path.exists() {
+            let bytes = serde_json::to_vec(package).map_err(|e| e.to_string())?;
+            if bytes.len() > MAX_PACKAGE_BYTES {
+                return Err("Package is too large".into());
+            }
+            write_atomic(&path, &bytes)?;
         }
+        Ok(())
+    }
+    fn change<T>(&self, f: impl FnOnce(&mut Registry) -> Result<T, String>) -> Result<T, String> {
+        // Serialize writers, not readers: fsync must not block capability/metadata reads.
+        let _writer = self.writer.lock().map_err(|e| e.to_string())?;
+        let mut next = self.inner.lock().map_err(|e| e.to_string())?.clone();
+        let result = f(&mut next)?;
+        let bytes = serde_json::to_vec(&PersistedRegistry {
+            packages: next.fingerprints.clone(),
+            records: next.records.clone(),
+        }).map_err(|e| e.to_string())?;
         write_atomic(&self.root.join("registry.json"), &bytes)?;
-        *guard = next;
+        *self.inner.lock().map_err(|e| e.to_string())? = next;
         Ok(result)
     }
-    pub fn package(&self, id: &str) -> Result<Package, String> {
+    pub fn package(&self, id: &str) -> Result<Arc<Package>, String> {
         self.inner
             .lock()
             .map_err(|e| e.to_string())?
@@ -179,54 +235,50 @@ impl PluginState {
         Ok(registry.records.get(id).cloned().unwrap_or_default())
     }
     pub fn info(&self, id: &str) -> Result<PluginInfo, String> {
-        let p = self.package(id)?;
-        let record = self.record(id)?;
+        let registry = self.inner.lock().map_err(|e| e.to_string())?;
+        Self::registry_info(&registry, id)
+    }
+    fn registry_info(registry: &Registry, id: &str) -> Result<PluginInfo, String> {
+        let p = registry.packages.get(id).ok_or("Plugin not found")?;
+        let record = registry.records.get(id).cloned().unwrap_or_default();
         Ok(PluginInfo {
             supported: p.manifest.platforms.iter().any(|p| p == platform())
                 && match &p.native {
-                    NativePackage::Library { artifacts } => {
-                        artifacts.contains_key(&native_target())
-                    }
+                    NativePackage::Library { artifacts } => artifacts.contains_key(&native_target()),
                     NativePackage::AndroidApk => cfg!(target_os = "android"),
                 },
-            fingerprint: p.fingerprint(),
-            manifest: p.manifest,
+            fingerprint: registry.fingerprints.get(id).ok_or("Missing package fingerprint")?.clone(),
+            manifest: p.manifest.clone(),
             enabled: record.enabled,
             generation: record.generation,
             install_source: record.install_source,
         })
     }
     pub fn list(&self) -> Result<Vec<PluginInfo>, String> {
-        let mut ids: Vec<_> = self
-            .inner
-            .lock()
-            .map_err(|e| e.to_string())?
-            .packages
-            .keys()
-            .cloned()
-            .collect();
-        ids.sort();
-        ids.dedup();
-        ids.iter().map(|id| self.info(id)).collect()
+        let registry = self.inner.lock().map_err(|e| e.to_string())?;
+        registry.packages.keys().map(|id| Self::registry_info(&registry, id)).collect()
     }
     pub fn enabled(&self, id: &str, enabled: bool) -> Result<PluginInfo, String> {
-        if enabled && !self.info(id)?.supported {
-            return Err("Plugin is not supported on this platform".into());
-        }
-        if self.record(id)?.enabled == enabled {
-            return self.info(id);
-        }
         self.change(|r| {
+            if enabled && !Self::registry_info(r, id)?.supported {
+                return Err("Plugin is not supported on this platform".into());
+            }
+            if !r.packages.contains_key(id) {
+                return Err("Plugin not found".into());
+            }
             let e = r.records.entry(id.into()).or_default();
-            e.enabled = enabled;
-            e.generation = e.generation.wrapping_add(1);
+            if e.enabled != enabled {
+                e.enabled = enabled;
+                e.generation = e.generation.wrapping_add(1);
+            }
             Ok(())
         })?;
         self.info(id)
     }
     pub fn authorize(&self, id: &str, generation: u64, permission: &str) -> Result<(), String> {
-        let manifest = self.manifest(id)?;
-        let r = self.record(id)?;
+        let registry = self.inner.lock().map_err(|e| e.to_string())?;
+        let manifest = &registry.packages.get(id).ok_or("Plugin not found")?.manifest;
+        let r = registry.records.get(id).cloned().unwrap_or_default();
         if !r.enabled || r.generation != generation {
             return Err("DISABLED: plugin activation has ended".into());
         }
@@ -271,10 +323,18 @@ impl PluginState {
         fingerprint: &str,
         source: Option<InstallSource>,
     ) -> Result<PluginInfo, String> {
+        // Parsing validates the incoming package; persistence caches its identity.
+        self.install_package(Package::parse(content)?, fingerprint, source)
+    }
+    pub fn install_package(
+        &self,
+        p: Package,
+        fingerprint: &str,
+        source: Option<InstallSource>,
+    ) -> Result<PluginInfo, String> {
         if let Some(source) = &source {
             source.validate()?;
         }
-        let p = Package::parse(content)?;
         if p.fingerprint() != fingerprint {
             return Err("Package fingerprint changed".into());
         }
@@ -286,7 +346,9 @@ impl PluginState {
             if r.packages.len() >= 32 && !r.packages.contains_key(&id) {
                 return Err("At most 32 installed plugins".into());
             }
-            r.packages.insert(id.clone(), p);
+            Self::persist_package(&self.root, &p, fingerprint)?;
+            r.fingerprints.insert(id.clone(), fingerprint.to_owned());
+            r.packages.insert(id.clone(), Arc::new(p));
             r.records.entry(id.clone()).or_default().install_source = source;
             Ok(())
         })?;
@@ -298,6 +360,7 @@ impl PluginState {
                 return Err("Disable the plugin before uninstalling it".into());
             }
             r.packages.remove(id);
+            r.fingerprints.remove(id);
             r.records.remove(id);
             Ok(())
         })
@@ -423,6 +486,29 @@ impl PluginState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn payload_is_shared_and_settings_persist_only_references() {
+        let root = std::env::temp_dir().join(format!("player-plugin-payload-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let state = PluginState::new(root.clone()).unwrap();
+        let package = Package { manifest: crate::plugins::model::fixture_manifest(), native: fixture_native() };
+        let id = package.manifest.id.clone();
+        let fingerprint = package.fingerprint();
+        state.install_package(package, &fingerprint, None).unwrap();
+        let first = state.package(&id).unwrap();
+        assert!(Arc::ptr_eq(&first, &state.package(&id).unwrap()));
+        let payload = root.join("packages").join(format!("{fingerprint}.json"));
+        let modified = fs::metadata(&payload).unwrap().modified().unwrap();
+        state.update_settings(&id, 0, json!({"kept": true})).unwrap();
+        let registry: Value = serde_json::from_slice(&fs::read(root.join("registry.json")).unwrap()).unwrap();
+        assert_eq!(registry["packages"][&id], fingerprint);
+        assert_eq!(fs::metadata(payload).unwrap().modified().unwrap(), modified);
+        drop(state);
+        let loaded = PluginState::new(root.clone()).unwrap();
+        assert_eq!(loaded.info(&id).unwrap().fingerprint, fingerprint);
+        assert_eq!(loaded.settings(&id).unwrap()["values"]["kept"], true);
+        let _ = fs::remove_dir_all(root);
+    }
     #[test]
     fn fresh_player_contains_no_preinstalled_provider_packages() {
         let root = std::env::temp_dir().join(format!("player-no-bundled-{}", std::process::id()));

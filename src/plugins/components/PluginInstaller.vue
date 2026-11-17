@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { openUrl } from '@tauri-apps/plugin-opener';
+import { open as openFileDialog } from '@tauri-apps/plugin-dialog';
 import { usePluginHost } from '../host';
-import type { AndroidCatalogInstallResult, AndroidPluginDiscovery, CatalogEntry, PluginDownload, PluginPreview } from '../types';
+import type { AndroidCatalogInstallResult, AndroidPluginDiscovery, CatalogEntry, PluginCatalogListing, PluginDownload, PluginPreview } from '../types';
 import PluginMetadata from './PluginMetadata.vue';
 import PluginImage from './PluginImage.vue';
 import PluginCatalog from './PluginCatalog.vue';
@@ -39,8 +40,19 @@ async function downloadApk() {
 }
 onMounted(() => { android.value = /Android/i.test(navigator.userAgent); });
 let content = '';
-function resetPreview() { preview.value = undefined; content = ''; }
+function resetPreview() {
+  const token = preview.value?.token;
+  preview.value = undefined; content = '';
+  if (token) void invoke('plugins_discard_preview', { token }).catch(() => {});
+}
+let disposed = false;
+onUnmounted(() => { disposed = true; resetPreview(); });
 function showPreview(candidate: string, checked: PluginPreview) {
+  if (disposed) {
+    if (checked.token) void invoke('plugins_discard_preview', { token: checked.token }).catch(() => {});
+    return;
+  }
+  resetPreview();
   content = candidate; preview.value = checked;
   void nextTick(() => previewCard.value?.scrollIntoView({ block: 'nearest' }));
 }
@@ -56,25 +68,24 @@ async function scanApks() {
 function previewApk(plugin: AndroidPluginDiscovery['plugins'][number]) {
   showPreview(plugin.content, plugin);
 }
-async function load(event: Event) {
-  const input = event.target as HTMLInputElement;
-  const file = input.files?.[0];
-  if (!file || busy.value) return;
-  busy.value = 'preview'; error.value = ''; resetPreview();
+async function load() {
+  if (busy.value) return;
+  busy.value = 'preview'; error.value = '';
   try {
-    if (file.size > 96 * 1024 * 1024) throw new Error('Maximum native package size is 96 MiB');
-    const candidate = await file.text();
-    const checked = await invoke<PluginPreview>('plugins_preview', { content: candidate });
-    showPreview(candidate, checked);
+    const path = await openFileDialog({ multiple: false, filters: [{ name: 'Player plugin', extensions: ['player-plugin', 'json'] }] });
+    if (!path) return;
+    resetPreview();
+    const checked = await invoke<PluginPreview>('plugins_preview_path', { path });
+    showPreview('', checked);
   } catch (e) { error.value = String(e); }
-  finally { input.value = ''; busy.value = ''; }
+  finally { busy.value = ''; }
 }
 async function loadUrl() {
   if (busy.value || !url.value.trim()) return;
   busy.value = 'download'; error.value = ''; resetPreview();
   try {
     const downloaded = await invoke<PluginDownload>('plugins_download', { url: url.value.trim() });
-    showPreview(downloaded.content, downloaded);
+    showPreview('', downloaded);
   } catch (e) { error.value = String(e); }
   finally { busy.value = ''; }
 }
@@ -107,10 +118,17 @@ async function loadCatalogPlugin(entry: CatalogEntry) {
       return;
     }
 
+    let packageUrl = entry.installUrl || entry.repository;
+    if (entry.installUrls) {
+      const listing = await invoke<PluginCatalogListing>('plugins_catalog');
+      const selectedUrl = entry.installUrls[listing.nativeTarget];
+      if (!selectedUrl) throw new Error('No plugin package is available for this architecture');
+      packageUrl = selectedUrl;
+    }
     const downloaded = await invoke<PluginDownload>('plugins_download', {
-      url: entry.installUrl || entry.repository, expectedId: entry.id,
+      url: packageUrl, expectedId: entry.id,
     });
-    showPreview(downloaded.content, downloaded);
+    showPreview('', downloaded);
   } catch (e) {
     error.value = String(e);
     if (android.value && entry.androidApkUrl) {
@@ -125,7 +143,7 @@ async function install() {
   if (!preview.value || busy.value) return;
   try {
     busy.value = 'install'; error.value = '';
-    await host.install(content, preview.value.fingerprint, preview.value.source);
+    await host.install(content, preview.value.fingerprint, preview.value.source, preview.value.token, preview.value.manifest);
     resetPreview();
     emit('done');
   } catch (e) { error.value = String(e); }
@@ -194,7 +212,7 @@ async function uninstall(id: string) {
         <label for="plugin-url">Public GitHub repository, plugin folder or package URL</label>
         <div class="plugin-url-row"><input id="plugin-url" v-model="url" class="form-input" type="url" placeholder="https://github.com/author/plugin" autocomplete="off" :disabled="Boolean(busy)" /><button class="control-button" :disabled="Boolean(busy) || !url.trim()" :aria-busy="busy === 'download'">{{ busy === 'download' ? 'Loading…' : 'Load from URL' }}</button></div>
       </form>
-      <label>Or choose a .player-plugin package<input class="form-file" type="file" accept=".player-plugin,.json" :disabled="Boolean(busy)" :aria-busy="busy === 'preview'" @change="load" /></label>
+      <button class="control-button" :disabled="Boolean(busy)" :aria-busy="busy === 'preview'" @click="load">Or choose a .player-plugin package</button>
     </div>
   </section>
 </template>

@@ -180,7 +180,7 @@ test('catalog uninstall disables an active plugin before deleting it and stops i
 
 
 
-function nativeHostHarness({startupEvent} = {}) {
+function nativeHostHarness({startupEvent, activation} = {}) {
   const source = readFileSync(new URL('../src/plugins/host.ts', import.meta.url), 'utf8');
   const code = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
   const queue = {};
@@ -193,6 +193,7 @@ function nativeHostHarness({startupEvent} = {}) {
     if (command === 'plugins_diagnostics') return [];
     if (command === 'plugin_load') { if (startupEvent) listeners.get('plugin-event')({payload:startupEvent}); return {events:startupEvent ? [startupEvent] : []}; }
     if (command === 'plugins_set_enabled') { plugin.enabled = args.enabled; plugin.generation++; return plain(plugin); }
+    if (command === 'plugin_native_call' && args.method === 'activate' && activation) return activation;
     if (command === 'plugin_native_call') return args.method === 'render' ? { type:'text',text:'Native UI' } : null;
     if (command === 'plugin_native_reply') return null;
     throw new Error(`Unexpected command ${command}`);
@@ -203,6 +204,21 @@ function nativeHostHarness({startupEvent} = {}) {
   const host = helpers.createPluginHost({ snapshot:()=>reactive({title:'A track',playing:true,resource:null}),transport:async()=>{},playSource:async()=>{},adopt:async()=>{},navigate:(...args)=>navigation.push(args) });
   return {host,calls,listeners,navigation,plugin,start:async()=>{for(const fn of mounted) await fn();},stop:()=>unmounted.forEach(fn=>fn())};
 }
+
+test('pending activation stays starting until native initialization completes', async () => {
+  let complete;
+  const activation = new Promise(resolve => { complete = resolve; });
+  const h = nativeHostHarness({ activation });
+  const started = h.start();
+  await settle();
+  assert.deepEqual(h.host.starting.value, ['example.native']);
+  assert.deepEqual(h.host.running.value, []);
+  complete(null);
+  await started;
+  assert.deepEqual(h.host.starting.value, []);
+  assert.deepEqual(h.host.running.value, ['example.native']);
+  h.stop();
+});
 
 test('native host activates through IPC, passes plain data and renders native UI', async () => {
   const h = nativeHostHarness(); await h.start();

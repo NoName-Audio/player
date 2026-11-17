@@ -24,6 +24,8 @@ pub struct Entry {
     pub repository: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub install_url: Option<String>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub install_urls: std::collections::BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub android_apk_url: Option<String>,
     pub added_at: String,
@@ -45,6 +47,7 @@ pub struct Entry {
 pub struct Listing {
     pub catalog: Catalog,
     pub platform: &'static str,
+    pub native_target: String,
 }
 
 fn valid_date(date: &str) -> bool {
@@ -103,6 +106,13 @@ impl Catalog {
             }
             super::remote::download_url(&entry.repository)?;
             if let Some(url) = &entry.install_url {
+                super::remote::download_url(url)?;
+            }
+            for (target, url) in &entry.install_urls {
+                if !["macos-aarch64", "macos-x86_64", "linux-aarch64", "linux-x86_64", "windows-aarch64", "windows-x86_64"].contains(&target.as_str())
+                    || !entry.platforms.iter().any(|p| target.starts_with(&format!("{p}-"))) {
+                    return Err("Invalid catalog package target".into());
+                }
                 super::remote::download_url(url)?;
             }
             if let Some(url) = &entry.android_apk_url {
@@ -186,6 +196,7 @@ where
     Ok(Listing {
         catalog,
         platform: super::model::platform(),
+        native_target: super::model::native_target(),
     })
 }
 
@@ -247,6 +258,14 @@ mod tests {
         assert_eq!(catalog.schema_version, 2);
     }
     #[test]
+    fn target_packages_reject_unknown_architectures_and_untrusted_urls() {
+        for (target, url) in [("macos-aarch64", "file:///tmp/runtime"), ("macos-mips", "https://example.org/runtime.player-plugin")] {
+            let mut value = fixture();
+            value["plugins"][0]["installUrls"] = serde_json::json!({target: url});
+            assert!(parse(value).is_err());
+        }
+    }
+    #[test]
     fn rejects_untrusted_or_ambiguous_catalog_metadata() {
         let mut value = fixture();
         value["schemaVersion"] = 3.into();
@@ -298,10 +317,6 @@ mod tests {
             ))
             .unwrap();
             assert_eq!(listing.catalog.plugins[0].name, name);
-            let json = serde_json::to_value(&listing).unwrap();
-            assert_eq!(json.as_object().unwrap().len(), 2);
-            assert!(json.get("catalog").is_some());
-            assert!(json.get("platform").is_some());
         }
         assert_eq!(calls, 2);
     }

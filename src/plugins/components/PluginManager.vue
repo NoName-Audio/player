@@ -90,11 +90,12 @@ async function retry(id: string) {
       <PluginMetadata :manifest="plugin.manifest" />
       <p v-if="plugin.manifest.androidNative">Android APK · {{ plugin.manifest.androidNative.packageName }}</p>
       <p v-if="!plugin.supported">Unavailable on this platform.</p>
+      <p v-else-if="host.starting.value.includes(plugin.manifest.id)" role="status">Starting… Preparing plugin files.</p>
       <p v-else-if="plugin.enabled && !host.running.value.includes(plugin.manifest.id)">Not running</p>
       <p v-if="host.errors.value[plugin.manifest.id]" class="error" role="alert">{{ host.errors.value[plugin.manifest.id] }}</p>
       <div class="plugin-actions">
         <button v-if="updateFor(plugin.manifest.id)" type="button" class="control-button control-button-primary" :disabled="Boolean(busy) || updateBusy" :aria-busy="updateId === plugin.manifest.id && (Boolean(busy) || updateBusy)" @click="update(updateFor(plugin.manifest.id)!)">{{ updateId === plugin.manifest.id && (Boolean(busy) || updateBusy) ? 'Loading update…' : 'Update' }}</button>
-        <button v-if="(plugin.enabled || host.errors.value[plugin.manifest.id]) && plugin.supported && !host.running.value.includes(plugin.manifest.id)" class="control-button" :disabled="Boolean(busy) || updateBusy" :aria-busy="busy === `retry:${plugin.manifest.id}`" @click="retry(plugin.manifest.id)">Retry</button>
+        <button v-if="(plugin.enabled || host.errors.value[plugin.manifest.id]) && plugin.supported && !host.running.value.includes(plugin.manifest.id) && !host.starting.value.includes(plugin.manifest.id)" class="control-button" :disabled="Boolean(busy) || updateBusy" :aria-busy="busy === `retry:${plugin.manifest.id}`" @click="retry(plugin.manifest.id)">Retry</button>
         <button v-if="!plugin.enabled" class="control-button" :disabled="Boolean(busy) || updateBusy" :aria-busy="busy === `cache:${plugin.manifest.id}`" @click="clearCache(plugin.manifest.id)">Clear cache</button>
         <button v-if="!plugin.enabled" class="control-button" :disabled="Boolean(busy) || updateBusy" :aria-busy="busy === `uninstall:${plugin.manifest.id}`" @click="uninstall(plugin.manifest.id)">Uninstall</button>
       </div>

@@ -784,6 +784,46 @@ fn packet_duration_secs(
         .unwrap_or(0.0)
 }
 
+// A demuxer must not observe a temporary EOF halfway through a container
+// element. Growing sources are sequential: their seek tables may point beyond
+// the downloaded prefix, and probing those tables can invalidate parser state.
+struct GrowingMediaSource {
+    file: std::fs::File,
+    path: PathBuf,
+    shared: Arc<Shared>,
+}
+
+impl std::io::Read for GrowingMediaSource {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        if buffer.is_empty() { return Ok(0); }
+        loop {
+            if self.shared.stop.load(Ordering::SeqCst) {
+                return Err(std::io::Error::new(std::io::ErrorKind::Other, "Playback stopped"));
+            }
+            let count = std::io::Read::read(&mut self.file, buffer)?;
+            if count != 0 { return Ok(count); }
+            match crate::plugin_sources::transfer_state(&self.path) {
+                Some(crate::plugin_sources::TransferState::Active) => std::thread::sleep(std::time::Duration::from_millis(25)),
+                Some(crate::plugin_sources::TransferState::Failed | crate::plugin_sources::TransferState::TimedOut | crate::plugin_sources::TransferState::Cancelled) => {
+                    return Err(std::io::Error::new(std::io::ErrorKind::Other, "Media transfer stopped"));
+                }
+                _ => return Ok(0),
+            }
+        }
+    }
+}
+
+impl std::io::Seek for GrowingMediaSource {
+    fn seek(&mut self, _: std::io::SeekFrom) -> std::io::Result<u64> {
+        Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "Growing media is sequential"))
+    }
+}
+
+impl symphonia::core::io::MediaSource for GrowingMediaSource {
+    fn is_seekable(&self) -> bool { false }
+    fn byte_len(&self) -> Option<u64> { None }
+}
+
 fn decode_thread_seek(
     shared: Arc<Shared>,
     source: DecodeSource,
@@ -791,7 +831,10 @@ fn decode_thread_seek(
 ) -> Result<(), String> {
     let path = source.path.as_path();
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
-    let mss = MediaSourceStream::new(Box::new(file), Default::default());
+    let media: Box<dyn symphonia::core::io::MediaSource> = if source.follow_growing {
+        Box::new(GrowingMediaSource { file, path: source.path.clone(), shared: shared.clone() })
+    } else { Box::new(file) };
+    let mss = MediaSourceStream::new(media, Default::default());
 
     let mut hint = Hint::new();
     if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
@@ -844,7 +887,7 @@ fn decode_thread_seek(
 
     // Seek if requested
     let absolute_seek_secs = source.segment_start_secs + seek_secs.max(0.0);
-    if absolute_seek_secs > 0.0 {
+    if absolute_seek_secs > 0.0 && !source.follow_growing {
         // Opus needs at least 80 ms of decoded pre-roll after seeking.
         let decode_from = if is_opus {
             (absolute_seek_secs - 0.080).max(0.0)
@@ -924,7 +967,9 @@ fn decode_thread_seek(
                 if is_opus {
                     crate::audio_codecs::trim_opus_output(
                         &mut decoded,
-                        packet.ts(),
+                        packet_time_secs(&codec_params, packet.ts())
+                            .map(|seconds| (seconds * sample_rate as f64).round() as u64)
+                            .unwrap_or(packet.ts()),
                         (absolute_seek_secs * sample_rate as f64).round() as u64,
                         source
                             .segment_end_secs

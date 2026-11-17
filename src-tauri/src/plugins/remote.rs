@@ -11,10 +11,10 @@ use std::{
 
 #[derive(Debug, Serialize)]
 pub struct DownloadPreview {
-    pub content: String,
     pub manifest: Manifest,
-    pub fingerprint: String,
     pub source: InstallSource,
+    #[serde(skip)]
+    pub package: Package,
 }
 
 impl DownloadPreview {
@@ -165,18 +165,8 @@ where
     }
     async fn package_at(&mut self, url: Url) -> Result<Package, String> {
         let text = self.text(url.clone()).await?;
-        let json: Value = serde_json::from_str(&text)
-            .map_err(|_| "Link did not return a JSON plugin package or manifest")?;
-        if json.get("manifest").is_some() {
-            return Package::parse(&text);
-        }
-        if !url.path().ends_with("/plugin.json") {
-            return Err(
-                "Link must point to a .player-plugin package, plugin.json, or a GitHub repository"
-                    .into(),
-            );
-        }
-        Err("Native installation requires a built .player-plugin package, not source files".into())
+        tauri::async_runtime::spawn_blocking(move || Package::parse(&text))
+            .await.map_err(|e| e.to_string())?
     }
 }
 
@@ -307,15 +297,11 @@ where
         input
     };
     let package = resolver.package_at(package_url).await?;
-    let content = serde_json::to_string(&package).map_err(|e| e.to_string())?;
-    // Validate the complete package before showing its native-code approval.
-    let package = Package::parse(&content)?;
     source.validate()?;
     Ok(DownloadPreview {
-        fingerprint: package.fingerprint(),
-        manifest: package.manifest,
-        content,
+        manifest: package.manifest.clone(),
         source,
+        package,
     })
 }
 
