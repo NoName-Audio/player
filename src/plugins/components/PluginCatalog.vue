@@ -17,7 +17,7 @@ let disposed = false;
 const entries = computed(() => filterCatalog(listing.value?.catalog.plugins || [], query.value));
 const installed = (id: string) => host.plugins.value.find(p => p.manifest.id === id);
 const update = (entry: CatalogEntry) => isPluginUpdate(installed(entry.id)?.manifest.version, entry.version);
-const supported = (entry: CatalogEntry) => !!listing.value && entry.platforms.includes(listing.value.platform);
+const supported = (entry: CatalogEntry) => !!listing.value && entry.platforms.includes(listing.value.platform) && (!entry.installUrls || Boolean(entry.installUrls[listing.value.nativeTarget]));
 const tags = (entry: CatalogEntry) => [...new Set([...entry.platforms, ...entry.tags])];
 
 async function load() {

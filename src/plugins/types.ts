@@ -19,16 +19,18 @@ export interface PluginManifest {
   androidNative?: { packageName: string; entryClass: string; certificateSha256: string; apkSha256: string } | null;
 }
 export interface InstallSource { url: string; repository?: string | null; revision?: string | null }
-export interface PluginPreview { manifest: PluginManifest; fingerprint: string; source?: InstallSource }
-export interface PluginDownload extends PluginPreview { content: string; source: InstallSource }
+export interface PluginPreview { manifest: PluginManifest; fingerprint: string; source?: InstallSource; token?: string }
+export interface PluginDownload extends PluginPreview { token: string; source: InstallSource }
 export interface CatalogEntry {
   id: string; name: string; description: string; repository: string; installUrl?: string; androidApkUrl?: string;
+  installUrls?: Record<string, string>;
   addedAt: string; updatedAt?: string; version?: string; platforms: string[]; tags: string[];
   author?: PluginManifest['author']; image?: string;
 }
 export interface PluginCatalogListing {
   catalog: { schemaVersion: number; updatedAt: string; plugins: CatalogEntry[] };
   platform: string;
+  nativeTarget: string;
 }
 export interface AndroidPluginDiscovery { supported: boolean; plugins: Array<PluginPreview & { content: string }>; warnings: string[] }
 export interface AndroidCatalogInstallResult {
@@ -55,6 +57,9 @@ export interface SearchItem {
   id: string; title: string; subtitle?: string; coverHash?: string | null; coverLoading?: boolean;
   status?: string; actions?: ResultAction[];
 }
+/** Async providers publish completion through renderSearch after a host revision. */
+export interface SearchResult { items: SearchItem[]; nextCursor: string | null; pending?: boolean; searchId?: string; error?: string }
+export type SearchRefresh = SearchItem[] | { items: SearchItem[]; pending?: boolean; searchId?: string; error?: string };
 export interface UiNode {
   type: 'group' | 'text' | 'input' | 'button' | 'toggle' | 'results' | 'status';
   /** Status children open a responsive popup; title defaults to the manifest name. */

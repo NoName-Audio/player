@@ -11,6 +11,7 @@ export function createPluginHost(options: HostOptions) {
   const plugins = ref<PluginInfo[]>([]);
   const errors = ref<Record<string, string>>({});
   const running = ref<string[]>([]);
+  const starting = ref<string[]>([]);
   const revision = ref(0);
   const loading = ref(true);
   const operations = new Map<string, Promise<unknown>>();
@@ -80,6 +81,7 @@ export function createPluginHost(options: HostOptions) {
   async function start(info: PluginInfo) {
     const id = info.manifest.id;
     if (running.value.includes(id) || !info.enabled || !info.supported || disposed) return;
+    starting.value = [...starting.value, id];
     try {
       const loaded = await invoke<{ events: PluginEvent[] }>('plugin_load', { pluginId: id });
       await nativeCall(info, 'activate', { pluginId: id, generation: info.generation });
@@ -93,6 +95,8 @@ export function createPluginHost(options: HostOptions) {
       if (disposed || !plugins.value.some(p => p.manifest.id === id && p.enabled && p.generation === info.generation)) return;
       errors.value = { ...errors.value, [id]: String(e) }; terminate(id);
       try { const disabled = await invoke<PluginInfo>('plugins_set_enabled', { pluginId: id, enabled: false }); plugins.value = plugins.value.map(p => p.manifest.id === id ? disabled : p); } catch { /* Preserve the original startup error. */ }
+    } finally {
+      starting.value = starting.value.filter(pluginId => pluginId !== id);
     }
   }
   async function refresh() { plugins.value = await invoke<PluginInfo[]>('plugins_list'); }
@@ -111,17 +115,20 @@ export function createPluginHost(options: HostOptions) {
     operations.set(id, operation); try { await operation; } finally { operations.delete(id); }
   }
   async function retry(id: string) { if (plugins.value.find(p => p.manifest.id === id)?.enabled) await setEnabled(id, false); await setEnabled(id, true); }
-  async function install(content: string, fingerprint: string, source?: InstallSource) {
-    const packageData: unknown = JSON.parse(content);
-    if (!packageData || typeof packageData !== 'object' || !('manifest' in packageData)) throw new Error('Invalid plugin package');
-    const manifest = packageData.manifest;
+  async function install(content: string, fingerprint: string, source?: InstallSource, token?: string, reviewedManifest?: { id: string }) {
+    let manifest: unknown = reviewedManifest;
+    if (!token) {
+      const packageData: unknown = JSON.parse(content);
+      if (!packageData || typeof packageData !== 'object' || !('manifest' in packageData)) throw new Error('Invalid plugin package');
+      manifest = packageData.manifest;
+    }
     if (!manifest || typeof manifest !== 'object' || !('id' in manifest) || typeof manifest.id !== 'string') throw new Error('Invalid plugin manifest');
     const id = manifest.id;
     await operations.get(id);
     const restoreEnabled = plugins.value.some(p => p.manifest.id === id && p.enabled);
     if (restoreEnabled) await setEnabled(id, false);
     try {
-      await invoke('plugins_install', { content, fingerprint, source });
+      await invoke('plugins_install', { content: token ? undefined : content, token, fingerprint, source });
     } finally {
       try {
         if (restoreEnabled) await setEnabled(id, true);
@@ -177,7 +184,7 @@ export function createPluginHost(options: HostOptions) {
     finally { loading.value = false; }
   });
   onUnmounted(() => { disposed = true; unlisteners.forEach(stop => stop()); running.value = []; });
-  return { plugins, errors, running, revision, loading, contributions, attachments, attachmentQueue, call, refresh, setEnabled, retry, install, uninstall };
+  return { plugins, errors, running, starting, revision, loading, contributions, attachments, attachmentQueue, call, refresh, setEnabled, retry, install, uninstall };
 }
 export type PluginHost = ReturnType<typeof createPluginHost>;
 const key: InjectionKey<PluginHost> = Symbol('PlayerPluginHost');

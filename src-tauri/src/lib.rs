@@ -237,6 +237,8 @@ pub fn run() {
             plugins::android::plugins_android_install_catalog,
             plugins::plugins_diagnostics,
             plugins::plugins_preview,
+            plugins::plugins_preview_path,
+            plugins::plugins_discard_preview,
             plugins::plugins_download,
             plugins::plugins_catalog,
             plugins::plugins_install,

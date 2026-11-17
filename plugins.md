@@ -34,6 +34,19 @@ pending, including before `coverHash` exists. The renderer uses the player's
 existing striped image loader; plugins must clear this flag on success, missing
 artwork, or failure rather than infer loading from a missing hash.
 
+Search providers return `{ items, nextCursor, pending?: boolean, searchId?: string,
+error?: string }`. A provider that completes in the initial call can omit
+`pending`; asynchronous providers set it to `true` and publish host revisions as
+results change. Give each submission a distinct `searchId`: the host forwards it
+alongside current result IDs to `renderSearch`, including when the list is empty.
+Refresh returns either the legacy item array or `{ items, pending?: boolean,
+searchId?: string, error?: string }`. Echo the submission ID, not a global latest
+query. Return `pending: false` on completion; failures can return `error` with an
+empty list or fail the call. Never insert pending, count, empty, or error markers
+as result items. The existing Search button stays busy while pending, even with
+no items. Result actions remain usable after the initial call, and changing the
+query discards stale responses.
+
 ## Component attachments
 
 Optional manifest `attachments` render native declarative UI before/after the

@@ -120,6 +120,13 @@ impl Decoder for OpusDecoder {
         if params.codec != CODEC_TYPE_OPUS || params.sample_rate != Some(OPUS_RATE) {
             return unsupported_error("opus: expected Opus at 48000 Hz");
         }
+        // Matroska supplies a layout instead of the explicit channel mask used
+        // by Ogg. Normalize both representations before validating OpusHead.
+        let mut normalized = params.clone();
+        if normalized.channels.is_none() {
+            normalized.channels = normalized.channel_layout.map(|layout| layout.into_channels());
+        }
+        let params = &normalized;
         let header = parse_header(params)?;
         let channels = header.mapping.len();
         let mut decoder =
@@ -198,6 +205,51 @@ mod tests {
     const MONO: &[u8] = include_bytes!("../tests/fixtures/opus-mono.opus");
     const LONG: &[u8] = include_bytes!("../tests/fixtures/opus-120ms.opus");
     const SURROUND: &[u8] = include_bytes!("../tests/fixtures/opus-surround.opus");
+
+    #[test]
+    fn layout_only_opus_accepts_mono_stereo_and_rejects_mismatch() {
+        for (data, layout) in [(MONO, symphonia::core::audio::Layout::Mono), (STEREO, symphonia::core::audio::Layout::Stereo)] {
+            let source = MediaSourceStream::new(Box::new(Cursor::new(data.to_vec())), Default::default());
+            let format = symphonia::default::get_probe().format(&Hint::new(), source, &FormatOptions::default(), &MetadataOptions::default()).unwrap().format;
+            let mut params = format.default_track().unwrap().codec_params.clone();
+            params.channels = None;
+            params.channel_layout = Some(layout);
+            assert!(registry().make(&params, &DecoderOptions::default()).is_ok());
+            params.channel_layout = None;
+            assert!(registry().make(&params, &DecoderOptions::default()).is_err());
+            params.channel_layout = Some(match layout { symphonia::core::audio::Layout::Mono => symphonia::core::audio::Layout::Stereo, _ => symphonia::core::audio::Layout::Mono });
+            assert!(registry().make(&params, &DecoderOptions::default()).is_err());
+        }
+    }
+
+    #[test]
+    fn matroska_opus_layout_and_partial_prefix_decode() {
+        struct Sequential(Cursor<Vec<u8>>);
+        impl std::io::Read for Sequential {
+            fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> { std::io::Read::read(&mut self.0, bytes) }
+        }
+        impl std::io::Seek for Sequential {
+            fn seek(&mut self, _: std::io::SeekFrom) -> std::io::Result<u64> { Err(std::io::ErrorKind::Unsupported.into()) }
+        }
+        impl symphonia::core::io::MediaSource for Sequential {
+            fn is_seekable(&self) -> bool { false }
+            fn byte_len(&self) -> Option<u64> { None }
+        }
+        let fixture = include_bytes!("../../plugins/youtube/assets/stream-test.webm");
+        let stream = MediaSourceStream::new(Box::new(Sequential(Cursor::new(fixture[..384 * 1024].to_vec()))), Default::default());
+        let mut hint = Hint::new();
+        hint.with_extension("webm");
+        let mut format = symphonia::default::get_probe().format(&hint, stream, &FormatOptions::default(), &MetadataOptions::default()).unwrap().format;
+        let track = format.default_track().unwrap();
+        let id = track.id;
+        assert!(track.codec_params.channels.is_none());
+        let mut decoder = registry().make(&track.codec_params, &DecoderOptions::default()).unwrap();
+        let mut frames = 0;
+        while let Ok(packet) = format.next_packet() {
+            if packet.track_id() == id { frames += decoder.decode(&packet).unwrap().frames(); }
+        }
+        assert!(frames > 18 * OPUS_RATE as usize);
+    }
 
     fn decode(data: &[u8], seek: f64, end: Option<f64>) -> (CodecParameters, Vec<Vec<f32>>) {
         let source =

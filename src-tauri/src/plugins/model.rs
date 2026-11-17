@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub const API_VERSION: u32 = 2;
-pub const MAX_PACKAGE_BYTES: usize = 96 * 1024 * 1024;
+pub const MAX_PACKAGE_BYTES: usize = 768 * 1024 * 1024;
 pub const PERMISSIONS: &[&str] = &[
     "ui",
     "playback.read",
@@ -204,24 +204,104 @@ pub enum NativePackage {
 pub struct NativeArtifact {
     pub data: String,
     pub sha256: String,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub files: std::collections::BTreeMap<String, RuntimeFile>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeFile {
+    pub data: String,
+    pub sha256: String,
+    pub executable: bool,
+}
+fn decoded_size(data: &str, limit: usize) -> Result<usize, String> {
+    if data.is_empty() || data.len() % 4 != 0 || data.len() > limit.div_ceil(3) * 4 {
+        return Err("Invalid native payload size".into());
+    }
+    let padding = data.as_bytes().iter().rev().take_while(|&&b| b == b'=').count();
+    if padding > 2 { return Err("Invalid native payload encoding".into()); }
+    let size = data.len() / 4 * 3 - padding;
+    if size == 0 || size > limit { return Err("Invalid native payload size".into()); }
+    Ok(size)
+}
+fn decode_payload(data: &str, sha256: &str, limit: usize) -> Result<Vec<u8>, String> {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    use sha2::{Digest, Sha256};
+    decoded_size(data, limit)?;
+    let bytes = STANDARD.decode(data).map_err(|_| "Invalid native payload encoding")?;
+    if format!("{:x}", Sha256::digest(&bytes)) != sha256 {
+        return Err("Native payload SHA-256 mismatch".into());
+    }
+    Ok(bytes)
+}
+pub fn valid_runtime_filename(name: &str) -> bool {
+    if name.is_empty() || name.len() > 128 || name == "." || name == ".."
+        || name.ends_with('.') || !name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-')) {
+        return false;
+    }
+    let lower = name.to_ascii_lowercase();
+    let stem = lower.split('.').next().unwrap_or("");
+    !matches!(stem, "con" | "prn" | "aux" | "nul" | "clock$")
+        && !(stem.len() == 4 && (stem.starts_with("com") || stem.starts_with("lpt")) && matches!(stem.as_bytes()[3], b'1'..=b'9'))
+        && !matches!(lower.as_str(), "plugin.dll" | "plugin.so" | "plugin.dylib")
+}
+impl RuntimeFile {
+    pub fn decode(&self) -> Result<Vec<u8>, String> {
+        decode_payload(&self.data, &self.sha256, 256 * 1024 * 1024)
+    }
 }
 impl NativeArtifact {
     pub fn decode(&self) -> Result<Vec<u8>, String> {
-        use base64::{engine::general_purpose::STANDARD, Engine};
-        use sha2::{Digest, Sha256};
-        if self.data.len() > 90 * 1024 * 1024 {
-            return Err("Native library exceeds 64 MiB".into());
+        decode_payload(&self.data, &self.sha256, 64 * 1024 * 1024)
+    }
+    pub fn validate_files(&self) -> Result<(), String> {
+        self.validate_file_layout()?;
+        for file in self.files.values() { file.decode()?; }
+        Ok(())
+    }
+    pub(super) fn validate_file_layout(&self) -> Result<(), String> {
+        let mut names = std::collections::BTreeSet::new();
+        let mut total = 0usize;
+        for (name, file) in &self.files {
+            if !valid_runtime_filename(name) || !names.insert(name.to_ascii_lowercase()) {
+                return Err("Invalid or colliding runtime filename".into());
+            }
+            total = total.checked_add(decoded_size(&file.data, 256 * 1024 * 1024)?).ok_or("Runtime payload exceeds 384 MiB")?;
+            if total > 384 * 1024 * 1024 { return Err("Runtime payload exceeds 384 MiB".into()); }
         }
-        let bytes = STANDARD
-            .decode(&self.data)
-            .map_err(|_| "Invalid native library encoding")?;
-        if bytes.is_empty() || bytes.len() > 64 * 1024 * 1024 {
-            return Err("Invalid native library size".into());
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod runtime_validation_tests {
+    use super::*;
+    #[test]
+    fn rejects_unsafe_and_reserved_runtime_names() {
+        for name in ["", ".", "..", "../deno", "a/b", "a\\b", "C:deno", "é", "name.", "CON", "nul.txt", "COM1.exe", "lPt9", "PLUGIN.DLL", "plugin.so", "plugin.dylib"] {
+            assert!(!valid_runtime_filename(name), "{name}");
         }
-        if format!("{:x}", Sha256::digest(&bytes)) != self.sha256 {
-            return Err("Native library SHA-256 mismatch".into());
+        assert!(!valid_runtime_filename(&"a".repeat(129)));
+        for name in ["yt-dlp", "yt-dlp.exe", "deno", "deno.exe", "config.json"] {
+            assert!(valid_runtime_filename(name));
         }
-        Ok(bytes)
+    }
+    #[test]
+    fn rejects_case_collisions_and_hash_tampering() {
+        let file = RuntimeFile { data: "YQ==".into(), sha256: "ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb".into(), executable: true };
+        let mut artifact = NativeArtifact { data: file.data.clone(), sha256: file.sha256.clone(), files: [("deno".into(), file.clone()), ("DENO".into(), file)].into() };
+        assert!(artifact.validate_files().is_err());
+        artifact.files.remove("DENO");
+        artifact.validate_files().unwrap();
+        artifact.files.get_mut("deno").unwrap().sha256 = "0".repeat(64);
+        assert!(artifact.validate_files().is_err());
+    }
+    #[test]
+    fn checks_decoded_limits_before_decoding() {
+        assert_eq!(decoded_size("YQ==", 1).unwrap(), 1);
+        assert!(decoded_size("YWE=", 1).is_err());
+        assert!(decoded_size("====", 4).is_err());
+        assert!(decoded_size("", 4).is_err());
     }
 }
 pub fn native_target() -> String {
@@ -287,7 +367,7 @@ pub fn platform() -> &'static str {
 impl Package {
     pub fn parse(content: &str) -> Result<Self, String> {
         if content.len() > MAX_PACKAGE_BYTES {
-            return Err("Plugin package exceeds 96 MiB".into());
+            return Err("Plugin package exceeds 768 MiB".into());
         }
         let package: Self =
             serde_json::from_str(content).map_err(|e| format!("Invalid plugin package: {e}"))?;
@@ -320,6 +400,7 @@ impl Package {
                     if !self.manifest.platforms.iter().any(|p| p == os) {
                         return Err("Native artifact OS is absent from manifest platforms".into());
                     }
+                    artifact.validate_files()?;
                     artifact.decode()?;
                 }
             }
@@ -332,9 +413,9 @@ impl Package {
         self.manifest.validate()
     }
     pub fn fingerprint(&self) -> String {
-        blake3::hash(&serde_json::to_vec(self).expect("serializable package"))
-            .to_hex()
-            .to_string()
+        let mut hasher = blake3::Hasher::new();
+        serde_json::to_writer(&mut hasher, self).expect("serializable package");
+        hasher.finalize().to_hex().to_string()
     }
 }
 
@@ -512,6 +593,7 @@ pub(super) fn fixture_native() -> NativePackage {
                 target.into(),
                 NativeArtifact {
                     data: "YQ==".into(),
+                    files: Default::default(),
                     sha256: "ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb"
                         .into(),
                 },
