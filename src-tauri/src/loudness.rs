@@ -177,7 +177,8 @@ pub(crate) fn measure(path: &Path, start_secs: f64, end_secs: Option<f64>) -> Re
             &MetadataOptions::default(),
         )?
         .format;
-    let track = format.default_track().ok_or("no audio track")?;
+    let track = format.tracks().iter().find(|track| track.codec_params.sample_rate.is_some())
+        .ok_or("no audio track")?;
     let track_id = track.id;
     let params = track.codec_params.clone();
     let source_rate = params.sample_rate.ok_or("unknown sample rate")?;

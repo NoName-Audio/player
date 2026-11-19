@@ -855,7 +855,8 @@ fn decode_thread_seek(
 
     let mut format = probed.format;
 
-    let track = format.default_track().ok_or("no audio track found")?;
+    let track = format.tracks().iter().find(|track| track.codec_params.sample_rate.is_some())
+        .or_else(|| format.default_track()).ok_or("no audio track found")?;
 
     let track_id = track.id;
     let codec_params = track.codec_params.clone();

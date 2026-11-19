@@ -31,7 +31,8 @@ fn stream(
     format: &mut dyn FormatReader,
     mut frame: impl FnMut(f64, f32),
 ) -> Result<f64, DecodeError> {
-    let track = format.default_track().ok_or_else(|| {
+    let track = format.tracks().iter().find(|track| track.codec_params.sample_rate.is_some())
+        .or_else(|| format.default_track()).ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::InvalidData, "no audio track")
     })?;
     let track_id = track.id;
@@ -79,7 +80,7 @@ pub(crate) fn decode(path: &Path, segments: &[(f64, Option<f64>)]) -> Result<Vec
         }
     }
     let mut format = open(path)?;
-    let known_duration = format.default_track().and_then(|track| {
+    let known_duration = format.tracks().iter().find(|track| track.codec_params.sample_rate.is_some()).and_then(|track| {
         let params = &track.codec_params;
         let frames = params.n_frames?;
         let rate = params.sample_rate?;

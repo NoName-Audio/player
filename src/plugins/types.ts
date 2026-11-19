@@ -1,6 +1,6 @@
 import type { Track } from '../types';
 export interface Contribution {
-  id: string; kind: 'page' | 'settings' | 'search' | 'track-action' | 'player-widget';
+  id: string; kind: 'page' | 'settings' | 'search' | 'track-action' | 'player-widget' | 'share-handler';
   label: string; description: string; icon?: string; order: number; slot?: 'player.actions' | 'player.status';
   /** Pages appear in the sidebar by default; false keeps only their route. */
   showInMenu?: boolean;

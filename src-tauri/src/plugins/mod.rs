@@ -3,6 +3,8 @@ pub mod android;
 mod catalog;
 pub mod model;
 pub mod native;
+#[cfg(target_os = "android")]
+pub use native::dispatch_share;
 mod remote;
 pub(crate) mod secrets;
 mod store;

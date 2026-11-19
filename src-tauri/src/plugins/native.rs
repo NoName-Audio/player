@@ -55,6 +55,7 @@ struct Context {
     id: String,
     generation: u64,
     directory: Option<std::path::PathBuf>,
+    share_file: Option<Arc<Mutex<std::fs::File>>>,
 }
 struct Reply {
     id: String,
@@ -99,6 +100,19 @@ impl Context {
 impl Host for Context {
     fn call(&self, method: &str, args: Value) -> PluginResult {
         self.active()?;
+        if method == "share.read" {
+            use base64::Engine;
+            use std::io::{Read, Seek, SeekFrom};
+            let file = self.share_file.as_ref().ok_or("No file in this share call")?;
+            let offset = args["offset"].as_u64().ok_or("Invalid share offset")?;
+            let length = args["length"].as_u64().filter(|n| (1..=65536).contains(n)).ok_or("Invalid share length")?;
+            let mut file = file.lock().map_err(|e| e.to_string())?;
+            file.seek(SeekFrom::Start(offset)).map_err(|e| e.to_string())?;
+            let mut chunk = vec![0; length as usize];
+            let count = file.read(&mut chunk).map_err(|e| e.to_string())?;
+            self.active()?;
+            return Ok(json!({"data": base64::engine::general_purpose::STANDARD.encode(&chunk[..count])}));
+        }
         if method == "runtime.directory" {
             let path = self.directory.as_ref().ok_or("Runtime directory is only available to native libraries")?;
             self.active()?;
@@ -124,7 +138,8 @@ impl Host for Context {
             if topic.len() > 100 || method.len() > 100 {
                 return Err("Invalid background request".into());
             }
-            let context = self.clone();
+            let mut context = self.clone();
+            context.share_file = None;
             let task_args = args["args"].clone();
             tauri::async_runtime::spawn(async move {
                 let result = super::plugin_call(
@@ -196,6 +211,10 @@ unsafe extern "C" fn host_call(context: *mut c_void, request: *const u8, len: us
     }))
     .unwrap_or_else(|_| Err("Native host callback panicked".into()));
     Buffer::new(player_plugin_sdk::encode(result))
+}
+
+unsafe extern "C" fn deny_probe_host_call(_: *mut c_void, _: *const u8, _: usize) -> Buffer {
+    Buffer::new(player_plugin_sdk::encode(Err("Host calls are unavailable during canShare".into())))
 }
 fn ensure_real_directory(path: &std::path::Path) -> Result<(), String> {
     if let Some(parent) = path.parent() {
@@ -421,7 +440,7 @@ fn dispatch(
                 request.len(),
                 HostApi {
                     context: (context as *mut Context).cast(),
-                    call: host_call,
+                    call: if method == "canShare" { deny_probe_host_call } else { host_call },
                     free: Buffer::free,
                 },
             );
@@ -523,14 +542,27 @@ pub async fn plugin_native_call(
     {
         return Err("Native request exceeds 1 MiB".into());
     }
+    native_call(app, plugin_id, generation, method, args, None).await
+}
+
+async fn native_call(app: tauri::AppHandle, plugin_id: String, generation: u64, method: String,
+    args: Value, share_file: Option<Arc<Mutex<std::fs::File>>>) -> PluginResult {
     tauri::async_runtime::spawn_blocking(move || {
         let mut context = Context {
             app: app.clone(),
             id: plugin_id.clone(),
             generation,
             directory: None,
+            share_file,
         };
         context.active()?;
+        if matches!(method.as_str(), "share" | "canShare") {
+            let state = app.state::<PluginState>();
+            state.authorize(&plugin_id, generation, "library.import")?;
+            if !state.manifest(&plugin_id)?.contributions.iter().any(|c| c.kind == "share-handler") {
+                return Err("No share-handler contribution".into());
+            }
+        }
         validate_attachment_scope(
             &app.state::<PluginState>().manifest(&plugin_id)?,
             &method,
@@ -564,6 +596,9 @@ pub async fn plugin_native_call(
         if let Backend::Library(library) = &activation.backend {
             context.directory = Some(library.directory.clone());
         }
+        if matches!(method.as_str(), "share" | "canShare") && !activation.initialized {
+            return Err("Native plugin is not active".into());
+        }
         if method == "activate" && activation.initialized {
             return Ok(Value::Null);
         }
@@ -584,6 +619,56 @@ pub async fn plugin_native_call(
     .await
     .map_err(|e| e.to_string())?
 }
+/// Called only by Android intake with sanitized metadata and its private staged copy.
+#[cfg(target_os = "android")]
+pub async fn dispatch_share(app: &tauri::AppHandle, args: Value, staged: Option<&std::path::Path>) -> bool {
+    let file = match staged {
+        Some(path) => match std::fs::File::open(path) {
+            Ok(f) if f.metadata().is_ok_and(|m| m.is_file()) => Some(Arc::new(Mutex::new(f))),
+            _ => return false,
+        },
+        None => None,
+    };
+    let Ok(mut plugins) = app.state::<PluginState>().list() else { return false };
+    plugins.sort_by(|a, b| a.manifest.id.cmp(&b.manifest.id));
+    plugins.retain(|plugin| plugin.enabled && plugin.supported
+        && plugin.manifest.contributions.iter().any(|c| c.kind == "share-handler"));
+    let mut matching = Vec::new();
+    for plugin in plugins {
+        if native_call(app.clone(), plugin.manifest.id.clone(), plugin.generation,
+            "canShare".into(), args.clone(), None).await.is_ok_and(|reply| reply == Value::Bool(true)) {
+            matching.push(plugin);
+        }
+    }
+    let mut plugins = matching;
+    let explicit = plugins.len() > 1;
+    if explicit {
+        let mut choices: Vec<_> = plugins.iter().map(|p| format!("{} ({})", p.manifest.name, p.manifest.id)).collect();
+        if staged.is_some() { choices.push("Import into library".into()); }
+        match crate::share_inbox::choose_handler(app, choices).await {
+            Some(index) if index < plugins.len() => {
+                let selected = plugins.swap_remove(index);
+                plugins.clear();
+                plugins.push(selected);
+            }
+            Some(index) if index == plugins.len() && staged.is_some() => return false,
+            _ => return true, // Cancel: do not dispatch or import.
+        }
+    }
+    for plugin in plugins {
+        let id = plugin.manifest.id;
+        match native_call(app.clone(), id.clone(), plugin.generation, "share".into(), args.clone(), file.clone()).await {
+            Ok(reply) if reply["handled"].as_bool() == Some(true) => return true,
+            Err(error) => {
+                tracing::warn!(%id, %error, "Android share handler failed");
+                let _ = app.emit("plugin-runtime-error", json!({"pluginId":id,"generation":plugin.generation,"error":error}));
+            }
+            _ => {}
+        }
+    }
+    explicit // Never silently import after the user explicitly chose a plugin.
+}
+
 pub fn stop(app: &tauri::AppHandle, id: &str, generation: u64) {
     if let Ok(mut pending) = replies().lock() {
         pending.retain(|_, reply| {
@@ -608,6 +693,7 @@ pub fn stop(app: &tauri::AppHandle, id: &str, generation: u64) {
                 app: app.clone(),
                 id: id.into(),
                 generation,
+                share_file: None,
                 directory: match &activation.backend {
                     Backend::Library(library) => Some(library.directory.clone()),
                     Backend::Android => None,

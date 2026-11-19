@@ -188,9 +188,27 @@ class MainActivity : TauriActivity() {
         }
 
         super.onCreate(savedInstanceState)
+        if (savedInstanceState == null && intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY == 0) {
+            ShareInbox.receive(applicationContext, intent)
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        ShareInbox.receive(applicationContext, intent)
+    }
+
+    private var shareDialog: android.app.AlertDialog? = null
+
+    internal fun showShareDialog(dialog: android.app.AlertDialog) {
+        shareDialog?.dismiss()
+        shareDialog = dialog
+        dialog.show()
     }
 
     override fun onDestroy() {
+        shareDialog?.dismiss()
+        shareDialog = null
         super.onDestroy()
         multicastLock?.release()
         multicastLock = null
