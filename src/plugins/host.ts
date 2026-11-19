@@ -181,7 +181,10 @@ export function createPluginHost(options: HostOptions) {
       const warnings = await invoke<string[]>('plugins_diagnostics'); if (warnings.length) errors.value = { ...errors.value, host: warnings.join(' ') };
       await Promise.all(plugins.value.map(start));
     } catch (e) { errors.value = { ...errors.value, host: String(e) }; }
-    finally { loading.value = false; }
+    finally {
+      loading.value = false;
+      if (typeof navigator !== 'undefined' && /Android/i.test(navigator.userAgent)) await invoke('android_share_ready');
+    }
   });
   onUnmounted(() => { disposed = true; unlisteners.forEach(stop => stop()); running.value = []; });
   return { plugins, errors, running, starting, revision, loading, contributions, attachments, attachmentQueue, call, refresh, setEnabled, retry, install, uninstall };

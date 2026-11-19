@@ -29,6 +29,7 @@
 -keep class dev.verncat.player.SelfUpdateArgs { *; }
 -keep class dev.verncat.player.PluginSecrets { *; }
 -keep class dev.verncat.player.PluginSecretArgs { *; }
+-keep class dev.verncat.player.ShareInboxPlugin { *; }
 
 -keep class dev.verncat.player.NativeHostBridge { *; }
 

@@ -39,7 +39,7 @@ use walkdir::WalkDir;
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 const AUDIO_EXTENSIONS: &[&str] = &[
-    "mp3", "flac", "ogg", "opus", "aac", "m4a", "wav", "wv", "ape",
+    "mp3", "flac", "ogg", "opus", "aac", "m4a", "mp4", "wav", "wv", "ape",
 ];
 
 const CUE_EXTENSIONS: &[&str] = &["cue"];

@@ -528,10 +528,14 @@ impl Manifest {
                 "search",
                 "track-action",
                 "player-widget",
+                "share-handler",
             ]
             .contains(&c.kind.as_str())
             {
                 return Err("Unknown contribution kind".into());
+            }
+            if c.kind == "share-handler" && !m.permissions.iter().any(|p| p == "library.import") {
+                return Err("Share handlers require library.import permission".into());
             }
             if c.kind == "player-widget"
                 && !matches!(c.slot.as_deref(), Some("player.actions" | "player.status"))
@@ -558,7 +562,7 @@ impl Manifest {
         if !m.attachments.is_empty() && !m.permissions.iter().any(|p| p == "ui") {
             return Err("UI attachments require ui permission".into());
         }
-        if !m.contributions.is_empty() && !m.permissions.iter().any(|p| p == "ui") {
+        if m.contributions.iter().any(|c| c.kind != "share-handler") && !m.permissions.iter().any(|p| p == "ui") {
             return Err("UI contributions require ui permission".into());
         }
         Ok(())
@@ -627,6 +631,16 @@ mod tests {
             },
             native: fixture_native(),
         }
+    }
+    #[test]
+    fn share_handler_requires_import_not_ui() {
+        let mut manifest = package().manifest;
+        manifest.contributions.push(serde_json::from_value(serde_json::json!({
+            "kind": "share-handler", "id": "receive", "label": "Receive shares"
+        })).unwrap());
+        assert!(manifest.validate().is_err());
+        manifest.permissions.push("library.import".into());
+        manifest.validate().unwrap();
     }
     #[test]
     fn polling_interval_is_optional_and_bounded() {

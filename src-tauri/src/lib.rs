@@ -11,6 +11,10 @@ mod file_rollback;
 pub mod identify;
 pub mod import;
 mod import_paths;
+#[cfg(target_os = "android")]
+mod share_import;
+#[cfg(target_os = "android")]
+mod share_inbox;
 mod indexing_service;
 mod debug_sql;
 pub mod library;
@@ -22,6 +26,17 @@ pub mod sync;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::f32::consts::PI;
 use std::sync::Once;
+
+#[tauri::command]
+fn android_share_ready(app: tauri::AppHandle) {
+    #[cfg(target_os = "android")]
+    {
+        static START: Once = Once::new();
+        START.call_once(|| share_inbox::start(&app));
+    }
+    #[cfg(not(target_os = "android"))]
+    let _ = app;
+}
 
 static INIT_TRACING: Once = Once::new();
 
@@ -147,6 +162,7 @@ pub fn run() {
     #[cfg(target_os = "android")]
     let builder = builder.plugin(plugins::secrets::mobile_plugin())
         .plugin(plugins::android::mobile_plugin())
+        .plugin(share_inbox::mobile_plugin())
         .plugin(indexing_service::mobile_plugin());
 
     #[cfg(desktop)]
@@ -232,6 +248,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             greet,
+            android_share_ready,
             plugins::plugins_list,
             plugins::android::plugins_android_discover,
             plugins::android::plugins_android_install_catalog,
