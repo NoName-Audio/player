@@ -3246,17 +3246,13 @@ function nextLocalSearchPage() {
 }
 
 function scheduleInitialAppDataLoad() {
-  requestAnimationFrame(() => {
-    requestAnimationFrame(() => {
-      void loadAppData('mount');
-      // silent update check — no blocking UI, populates aboutUpdateStatus in background
-      setTimeout(async () => {
-        if (!autoUpdateChecks.value) return;
-        await checkAboutUpdates();
-        if (hasAvailableUpdate.value) updatePromptOpen.value = true;
-      }, 3000);
-    });
-  });
+  void loadAppData('mount');
+  // Update checks stay off the initial data-loading path.
+  setTimeout(async () => {
+    if (!autoUpdateChecks.value) return;
+    await checkAboutUpdates();
+    if (hasAvailableUpdate.value) updatePromptOpen.value = true;
+  }, 3000);
 }
 
 function onWindowFocus() {
