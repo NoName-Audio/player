@@ -579,7 +579,7 @@ const newPlaylistName = ref('');
 const homePinnedRegularTracks = ref<Record<number, Track[]>>({});
 // context menu for "add to playlist"
 const addToPlaylistMenu = ref<{ track: Track; x: number; y: number } | null>(null);
-const trackContextMenu = ref<{ track: Track; x: number; y: number; playlistId: number | null } | null>(null);
+const trackContextMenu = ref<{ track: Track; x: number; y: number; playlistId: number | null; fromDetail?: boolean } | null>(null);
 const homePinnedContextMenu = ref<{ item: HomePinnedPlaylistItem; x: number; y: number } | null>(null);
 const TRACK_MENU_MARGIN = 12;
 const TRACK_MENU_WIDTH = 240;
@@ -723,6 +723,12 @@ function openTrackContextMenu(e: MouseEvent, track: Track, playlistId: number | 
   e.preventDefault();
   e.stopPropagation();
   openTrackContextMenuAt(track, e.clientX, e.clientY, playlistId);
+}
+
+function openDetailTrackMenu(event: MouseEvent) {
+  if (!nowPlaying.value) return;
+  openTrackContextMenu(event, nowPlaying.value);
+  if (trackContextMenu.value) trackContextMenu.value.fromDetail = true;
 }
 
 function openHomePinnedContextMenuAt(item: HomePinnedPlaylistItem, x: number, y: number) {
@@ -869,6 +875,7 @@ function toggleLikeFromTrackContext() {
 
 function editTrackFromTrackContext() {
   const track = trackContextMenu.value?.track;
+  if (trackContextMenu.value?.fromDetail) showDetail.value = false;
   trackContextMenu.value = null;
   if (!track) return;
   openEditor(track);
@@ -2382,6 +2389,24 @@ interface NativePlaybackSession {
 }
 const nativePlaybackSourceId = ref<string | null>(null);
 const footerVideoTarget = ref<HTMLElement | null>(null);
+const playbackVideo = ref<InstanceType<typeof PlaybackVideo> | null>(null);
+const savingFrameCover = ref(false);
+async function saveVideoFrameCover() {
+  const menu = trackContextMenu.value;
+  const video = playbackVideo.value;
+  if (!menu?.fromDetail || menu.track.id !== nowPlaying.value?.id || !video || savingFrameCover.value) return;
+  trackContextMenu.value = null;
+  savingFrameCover.value = true;
+  try {
+    const png = await video.captureFrame();
+    const track = await invoke<Track>('set_video_frame_cover', { id: menu.track.id, png });
+    applyIdentifiedTrack(track);
+  } catch (error) {
+    alert(`Could not use the video frame as cover.\n${String(error)}`);
+  } finally {
+    savingFrameCover.value = false;
+  }
+}
 const detailVideoTarget = ref<HTMLElement | null>(null);
 const detailVideoControls = ref(false);
 const detailVideoMouseHover = ref(false);
@@ -2420,6 +2445,7 @@ function wheelDetailSwipe(event: WheelEvent) {
   if (detailWheelDistance >= 72) showDetail.value = false;
 }
 watch(showDetail, () => {
+  if (trackContextMenu.value?.fromDetail) trackContextMenu.value = null;
   detailVideoControls.value = false;
   detailVideoMouseHover.value = false;
   detailVideoKeyboard.value = true;
@@ -5032,6 +5058,8 @@ onUnmounted(() => {
     </main>
 
     <!-- Context menus -->
+    <Teleport to="body">
+    <div class="detail-track-popups">
     <ResponsivePopup
       :open="!!trackContextMenu"
       :anchor-x="trackContextMenu?.x ?? null"
@@ -5043,12 +5071,13 @@ onUnmounted(() => {
       <template v-if="trackContextMenu">
         <div class="playlist-menu-header">Track actions</div>
         <button class="playlist-menu-item" @click="toggleLikeFromTrackContext">{{ trackContextMenu.track.is_liked ? 'Unlike' : 'Like' }}</button>
-        <button v-if="hasArtistPage(trackContextMenu.track.artist)" class="playlist-menu-item" @click="openArtist(trackContextMenu.track.artist); trackContextMenu = null">Go to artist</button>
-        <button v-if="trackContextMenu.track.album" class="playlist-menu-item" @click="openAlbum(trackContextMenu.track.album, trackContextMenu.track.album_artist_or_artist ?? ''); trackContextMenu = null">Go to album</button>
+        <button v-if="hasArtistPage(trackContextMenu.track.artist)" class="playlist-menu-item" @click="openArtist(trackContextMenu.track.artist); if (trackContextMenu.fromDetail) showDetail = false; trackContextMenu = null">Go to artist</button>
+        <button v-if="trackContextMenu.track.album" class="playlist-menu-item" @click="openAlbum(trackContextMenu.track.album, trackContextMenu.track.album_artist_or_artist ?? ''); if (trackContextMenu.fromDetail) showDetail = false; trackContextMenu = null">Go to album</button>
         <button v-for="action in pluginTrackActions" :key="action.key" class="playlist-menu-item" @click="runPluginTrackAction(action)">{{ action.label }}</button>
         <button class="playlist-menu-item" @click="shareTrackFromTrackContext">Share</button>
         <button class="playlist-menu-item" @click="addTrackToPlaylistFromTrackContext">Add to playlist</button>
         <button class="playlist-menu-item" @click="editTrackFromTrackContext">Edit metadata</button>
+        <button v-if="trackContextMenu.fromDetail && canShowPlaybackVideo && trackContextMenu.track.id > 0 && !trackContextMenu.track.plugin_source && trackContextMenu.track.id === nowPlaying?.id" class="playlist-menu-item" :disabled="savingFrameCover" @click="saveVideoFrameCover">Use current frame as cover</button>
         <button class="playlist-menu-item" @click="identifyTrackFromTrackContext">Identify</button>
         <button
           v-if="trackContextMenu.playlistId !== null"
@@ -5060,6 +5089,8 @@ onUnmounted(() => {
         <button class="playlist-menu-item danger" @click="hideTrackAsDuplicateFromTrackContext">Hide (mark as duplicate)</button>
       </template>
     </ResponsivePopup>
+    </div>
+    </Teleport>
 
     <ResponsivePopup
       :open="!!homePinnedContextMenu"
@@ -5079,6 +5110,8 @@ onUnmounted(() => {
       </template>
     </ResponsivePopup>
 
+    <Teleport to="body">
+    <div class="detail-track-popups">
     <ResponsivePopup
       :open="!!addToPlaylistMenu"
       :anchor-x="addToPlaylistMenu?.x ?? null"
@@ -5100,6 +5133,8 @@ onUnmounted(() => {
         </button>
       </template>
     </ResponsivePopup>
+    </div>
+    </Teleport>
 
     <Transition name="modal">
       <div v-if="updatePromptOpen" class="modal-overlay" @click.self="updatePromptOpen = false">
@@ -5469,7 +5504,7 @@ onUnmounted(() => {
       <template #plugin-actions><PluginPanel v-for="widget in pluginWidgets.filter(w => w.slot === 'player.actions')" :key="widget.key" :plugin-id="widget.pluginId" :view-id="widget.id" /></template>
     </PlayerBar>
     <Teleport v-if="canShowPlaybackVideo && nativePlaybackSourceId && playbackVideoTarget" :to="playbackVideoTarget">
-      <PlaybackVideo :key="nativePlaybackSourceId" :source-id="nativePlaybackSourceId" />
+      <PlaybackVideo ref="playbackVideo" :key="nativePlaybackSourceId" :source-id="nativePlaybackSourceId" />
     </Teleport>
   </div>
 
@@ -5483,6 +5518,7 @@ onUnmounted(() => {
           </div>
           <div class="detail-sheet"
             :class="{ 'has-video': canShowPlaybackVideo, 'show-video-controls': detailVideoControls || detailVideoMouseHover, 'video-keyboard-controls': detailVideoKeyboard }"
+            @contextmenu="openDetailTrackMenu"
             @pointermove="moveDetailVideoPointer"
             @pointerleave="detailVideoMouseHover = false"
             @pointerdown="detailVideoKeyboard = false"
@@ -5603,6 +5639,7 @@ onUnmounted(() => {
 
 <style scoped>
 .detail-static-cover { position: absolute; inset: 15%; border-radius: 14px; box-shadow: 0 20px 50px color-mix(in srgb, var(--color-shadow) 40%, transparent); }
+.detail-track-popups { position: relative; z-index: 1001; }
 .page-title-input { width: 100%; min-width: 0; padding: 0; border: 0; border-radius: 4px; background: transparent; color: inherit; font: inherit; letter-spacing: inherit; }
 .page-title-input:focus-visible { outline: 2px solid var(--color-accent); outline-offset: -2px; }
 

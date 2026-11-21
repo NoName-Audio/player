@@ -9,6 +9,28 @@ const failed = ref(false);
 const canvas = ref<HTMLCanvasElement>();
 const legacy = ref(false);
 const native = ref(false);
+let hasDrawnFrame = false;
+async function captureFrame(): Promise<number[]> {
+  const element = canvas.value ?? video.value;
+  const width = canvas.value ? (hasDrawnFrame ? canvas.value.width : 0) : (video.value?.videoWidth ?? 0);
+  const height = canvas.value?.height ?? video.value?.videoHeight ?? 0;
+  if (!element || !width || !height || failed.value || (element instanceof HTMLVideoElement && element.readyState < 2)) {
+    throw new Error('No video frame is available yet.');
+  }
+  const scale = Math.min(1, 1280 / width, 720 / height);
+  const frame = document.createElement('canvas');
+  frame.width = Math.max(1, Math.round(width * scale));
+  frame.height = Math.max(1, Math.round(height * scale));
+  const context = frame.getContext('2d');
+  if (!context) throw new Error('Could not capture the video frame.');
+  context.drawImage(element, 0, 0, frame.width, frame.height);
+  const blob = await new Promise<Blob>((resolve, reject) => frame.toBlob(
+    (result) => result ? resolve(result) : reject(new Error('Could not encode the video frame.')),
+    'image/png',
+  ));
+  return Array.from(new Uint8Array(await blob.arrayBuffer()));
+}
+defineExpose({ captureFrame });
 void invoke<boolean>('native_video_enabled').then((enabled) => {
   native.value = enabled;
   legacy.value = !enabled;
@@ -32,6 +54,7 @@ watch(canvas, (element, _, cleanup) => {
         if (element!.width !== width) element!.width = width;
         if (element!.height !== height) element!.height = height;
         context!.putImageData(new ImageData(new Uint8ClampedArray(bytes, 8), width, height), 0, 0);
+        hasDrawnFrame = true;
       }
       request = requestAnimationFrame(draw);
     } catch {
@@ -104,7 +127,7 @@ watch(video, (current, _, cleanup) => {
 
 <template>
   <canvas v-if="!failed && native" ref="canvas" />
-  <video v-else-if="!failed && legacy" ref="video" :src="url" muted playsinline preload="auto"
+  <video v-else-if="!failed && legacy" ref="video" :src="url" crossorigin="anonymous" muted playsinline preload="auto"
     @loadedmetadata="failed = !($event.target as HTMLVideoElement).videoWidth"
     @error="failed = true" />
   <p v-else-if="failed" role="status">Video unavailable. Audio playback is unaffected.</p>

@@ -41,6 +41,7 @@ fn serve(path: &std::path::Path, request: &Request<Vec<u8>>) -> Response<Vec<u8>
     if !info.is_file() { return empty(StatusCode::NOT_FOUND); }
     let size = info.len();
     let mut builder = Response::builder().header("Content-Type", mime).header("Accept-Ranges", "bytes").header("Cache-Control", "no-store");
+    builder = builder.header("Access-Control-Allow-Origin", "*");
     if request.method() == tauri::http::Method::HEAD {
         return builder.header("Content-Length", size).body(Vec::new()).unwrap();
     }

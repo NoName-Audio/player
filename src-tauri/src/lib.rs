@@ -336,6 +336,7 @@ pub fn run() {
             #[cfg(feature = "native-video")]
             video::native::native_video_frame,
             video::native_video_enabled,
+            library::set_video_frame_cover,
             playback::playback_session,
             identify::identify_tracks,
             discovery::discovery_start,
