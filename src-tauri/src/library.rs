@@ -1873,6 +1873,13 @@ pub(crate) fn index_file(conn: &Connection, data_dir: &Path, abs: &Path) -> Resu
     let mut source_paths = vec![abs];
     if let Some(cover) = &sidecar_cover { source_paths.push(&cover.abs_path); }
     let fingerprint = indexing_fingerprint(&source_paths);
+    #[cfg(feature = "native-video")]
+    let fingerprint = fingerprint.map(|mut value| {
+        if crate::video::supported(abs) {
+            value.push_str("video-cover-v1;");
+        }
+        value
+    });
 
     let modified_secs = path_modified_secs(abs);
     let now_secs = std::time::SystemTime::now()
@@ -2375,6 +2382,40 @@ fn hash_virtual_track(parts: &[&str]) -> String {
     )
 )]
 fn read_audio_meta(path: &Path, sidecar_cover: Option<&SidecarCoverCandidate>) -> Meta {
+    let meta = read_tagged_audio_meta(path, sidecar_cover);
+    #[cfg(feature = "native-video")]
+    if crate::video::supported(path) {
+        if let Some(cover) = crate::video::native::cover(path) {
+            return Meta {
+                cover_data: Some(cover),
+                cover_mime: Some("image/png".into()),
+                cover_source_path: None,
+                cover_source_mtime: 0,
+                ..meta
+            };
+        }
+    }
+    meta
+}
+
+#[cfg(all(test, feature = "native-video"))]
+#[test]
+fn video_metadata_uses_frame_instead_of_sidecar() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let sidecar = SidecarCoverCandidate {
+        abs_path: root.join("cover.jpg"),
+        rel_path: "cover.jpg".into(),
+        modified_secs: 42,
+        mime: "image/jpeg".into(),
+    };
+    let meta = read_audio_meta(&root.join("mp4-opus.mp4"), Some(&sidecar));
+    assert_eq!(meta.cover_mime.as_deref(), Some("image/png"));
+    let cover = image::load_from_memory(&meta.cover_data.unwrap()).unwrap();
+    assert_eq!((cover.width(), cover.height()), (32, 32));
+    assert!(meta.cover_source_path.is_none());
+}
+
+fn read_tagged_audio_meta(path: &Path, sidecar_cover: Option<&SidecarCoverCandidate>) -> Meta {
     let tagged = match Probe::open(path).ok().and_then(|p| p.read().ok()) {
         Some(t) => t,
         None => {

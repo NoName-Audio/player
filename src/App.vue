@@ -5566,7 +5566,7 @@ onUnmounted(() => {
               <button class="icon-btn" @click="playPrev">
                 <AppIcon name="previous" :size="32" />
               </button>
-              <button class="detail-play-btn" @click="togglePlay">
+              <button class="detail-play-btn" @click="event => { if (canShowPlaybackVideo && event.detail > 0) (event.currentTarget as HTMLButtonElement).blur(); togglePlay(); }">
                 <AppIcon name="play" v-if="!isPlaying" :size="28" />
                 <AppIcon name="pause" v-else :size="28" />
               </button>
@@ -5609,8 +5609,11 @@ onUnmounted(() => {
   backdrop-filter: none;
   color: #fff;
   touch-action: none;
+  display: grid;
   grid-template-columns: minmax(0, 1fr);
   grid-template-rows: 1fr auto auto auto;
+  row-gap: var(--space-2);
+  padding-bottom: calc(var(--space-3) + env(safe-area-inset-bottom));
 }
 .has-video .detail-video-close {
   display: grid;
@@ -5625,16 +5628,21 @@ onUnmounted(() => {
   right: max(var(--space-3), env(safe-area-inset-right));
   color: #fff;
   background: rgb(0 0 0 / 55%);
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 180ms ease;
 }
-.has-video.show-video-controls .detail-video-close,
-.has-video .detail-video-close:focus-visible { opacity: 1; pointer-events: auto; }
-.has-video :is(.detail-info, .detail-seek-wrap, .detail-controls) { grid-column: 1; }
+.has-video :is(.detail-info, .detail-seek-wrap, .detail-controls) {
+  grid-column: 1;
+  justify-self: center;
+  width: min(100%, 360px);
+  min-width: 0;
+}
 .has-video .detail-info { grid-row: 2; margin-top: auto; }
 .has-video .detail-seek-wrap { grid-row: 3; }
-.has-video .detail-controls { grid-row: 4; }
+.has-video .detail-controls {
+  grid-row: 4;
+  justify-content: center;
+  gap: clamp(0px, 2vw, 8px);
+}
+.has-video .detail-seek-wrap { gap: var(--space-1); }
 .has-video .detail-video-background::after {
   content: '';
   position: absolute;
@@ -5650,11 +5658,9 @@ onUnmounted(() => {
 .has-video:is(:has(:focus-visible), .show-video-controls) :is(.detail-info, .detail-seek-wrap, .detail-controls) { opacity: 1; pointer-events: auto; }
 .has-video:is(:has(:focus-visible), .show-video-controls) .detail-video-background::after { opacity: 1; }
 @media (hover: hover) {
-  .has-video .detail-video-close { pointer-events: auto; }
-  .has-video .detail-video-close:hover { opacity: 1; }
   .has-video :is(.detail-info, .detail-seek-wrap, .detail-controls) { pointer-events: auto; }
-  .has-video:has(:is(.detail-info, .detail-seek-wrap, .detail-controls):hover) :is(.detail-info, .detail-seek-wrap, .detail-controls),
-  .has-video:has(:is(.detail-info, .detail-seek-wrap, .detail-controls):hover) .detail-video-background::after { opacity: 1; }
+  .has-video:hover:has(:is(.detail-info, .detail-seek-wrap, .detail-controls):hover) :is(.detail-info, .detail-seek-wrap, .detail-controls),
+  .has-video:hover:has(:is(.detail-info, .detail-seek-wrap, .detail-controls):hover) .detail-video-background::after { opacity: 1; }
 }
 .app {
   display: grid;

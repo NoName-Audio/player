@@ -347,6 +347,9 @@ This mode decodes only the video stream in Rust, selects frames against native
 audio position, and draws them to a canvas in the existing video surfaces.
 Frames are currently limited to 1280×720 for transfer to the canvas. Builds
 without the feature continue to use WebView video decoding.
+With native video enabled, library indexing uses a frame around 0.5 seconds
+as the cover for local videos. Existing videos pick up covers on reindexing;
+if a frame cannot be extracted, normal artwork fallback still applies.
 
 For a static build, run `bash scripts/prepare-video-codecs.sh <prefix> <rust-target>...`,
 set `FFMPEG_DIR` to the absolute prefix, and build with `--features native-video-static`.

@@ -108,36 +108,49 @@ impl Decoder {
         let Some(frame) = latest else {
             return Ok(Vec::new());
         };
-        let (w, h) = (frame.width(), frame.height());
-        let scale = (1280.0 / f64::from(w)).min(720.0 / f64::from(h)).min(1.0);
-        let (width, height) = (
-            ((f64::from(w) * scale) as u32).max(1),
-            ((f64::from(h) * scale) as u32).max(1),
-        );
-        let mut scaler = ff::software::scaling::Context::get(
-            frame.format(),
-            w,
-            h,
-            ff::format::Pixel::RGBA,
-            width,
-            height,
-            ff::software::scaling::Flags::BILINEAR,
-        )?;
-        let mut rgba = ff::frame::Video::empty();
-        scaler.run(&frame, &mut rgba)?;
-        let row = width as usize * 4;
-        let mut bytes = Vec::with_capacity(8 + row * height as usize);
-        bytes.extend(width.to_le_bytes());
-        bytes.extend(height.to_le_bytes());
-        for line in rgba
-            .data(0)
-            .chunks_exact(rgba.stride(0))
-            .take(height as usize)
-        {
-            bytes.extend_from_slice(&line[..row]);
-        }
-        Ok(bytes)
+        rgba_bytes(&frame, 1280, 720)
     }
+}
+
+pub(crate) fn cover(path: &Path) -> Option<Vec<u8>> {
+    let mut decoder = Decoder::open(path).ok()?;
+    let mut selected = None;
+    for _ in 0..60 {
+        let Some((pts, frame)) = decoder.next().ok()? else { break };
+        selected = Some(frame);
+        if pts >= 0.5 { break; }
+    }
+    let bytes = rgba_bytes(&selected?, 640, 640).ok()?;
+    let width = u32::from_le_bytes(bytes[..4].try_into().ok()?);
+    let height = u32::from_le_bytes(bytes[4..8].try_into().ok()?);
+    let mut png = Vec::new();
+    use image::ImageEncoder;
+    image::codecs::png::PngEncoder::new(&mut png)
+        .write_image(&bytes[8..], width, height, image::ExtendedColorType::Rgba8)
+        .ok()?;
+    Some(png)
+}
+
+fn rgba_bytes(frame: &ff::frame::Video, max_width: u32, max_height: u32) -> Result<Vec<u8>, ff::Error> {
+    let (w, h) = (frame.width(), frame.height());
+    let scale = (f64::from(max_width) / f64::from(w))
+        .min(f64::from(max_height) / f64::from(h)).min(1.0);
+    let width = ((f64::from(w) * scale) as u32).max(1);
+    let height = ((f64::from(h) * scale) as u32).max(1);
+    let mut scaler = ff::software::scaling::Context::get(
+        frame.format(), w, h, ff::format::Pixel::RGBA, width, height,
+        ff::software::scaling::Flags::BILINEAR,
+    )?;
+    let mut rgba = ff::frame::Video::empty();
+    scaler.run(frame, &mut rgba)?;
+    let row = width as usize * 4;
+    let mut bytes = Vec::with_capacity(8 + row * height as usize);
+    bytes.extend(width.to_le_bytes());
+    bytes.extend(height.to_le_bytes());
+    for line in rgba.data(0).chunks_exact(rgba.stride(0)).take(height as usize) {
+        bytes.extend_from_slice(&line[..row]);
+    }
+    Ok(bytes)
 }
 
 #[tauri::command]
