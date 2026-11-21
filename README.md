@@ -159,7 +159,8 @@ does not open a permission prompt from the background.
 ### Playback
 
 - Native audio decoding and playback in Rust, for FLAC, MP3, Ogg Vorbis, Opus, WAV, and AAC/ALAC.
-- Opus playback through bundled libopus, including seeking, encoder delay, and end padding.
+- Opus playback through bundled libopus, including mono and stereo Opus in MP4 containers.
+- Local MP4, M4V, and WebM video appears behind the playback controls. Now Playing fills the app window with uncropped video, without album art or beat-reactive blur. Hover over the bottom controls, use keyboard focus, or tap the video to reveal playback controls. Hover over the top-right corner to reveal the close button; tapping the video or focusing the button also reveals it. Swiping down closes the view. Video follows native audio and requires WebView codec support.
 - Seek, pause, resume, stop, and volume control.
 - Output device and sample rate selection.
 - Queue with shuffle, repeat, and up-next, across lists of any length.

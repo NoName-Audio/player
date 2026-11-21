@@ -19,6 +19,7 @@ mod indexing_service;
 mod debug_sql;
 pub mod library;
 pub mod playback;
+mod video;
 pub mod plugin_sources;
 pub mod plugins;
 pub mod sync;
@@ -158,6 +159,7 @@ pub fn run() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .register_asynchronous_uri_scheme_protocol(covers::SCHEME, covers::handle_request);
+    let builder = builder.register_asynchronous_uri_scheme_protocol("player-video", video::handle);
 
     #[cfg(target_os = "android")]
     let builder = builder.plugin(plugins::secrets::mobile_plugin())
