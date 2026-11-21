@@ -2384,6 +2384,14 @@ const nativePlaybackSourceId = ref<string | null>(null);
 const footerVideoTarget = ref<HTMLElement | null>(null);
 const detailVideoTarget = ref<HTMLElement | null>(null);
 const detailVideoControls = ref(false);
+const detailVideoMouseHover = ref(false);
+const detailVideoKeyboard = ref(true);
+function moveDetailVideoPointer(event: PointerEvent) {
+  if (event.pointerType !== 'mouse') return;
+  detailVideoKeyboard.value = false;
+  detailVideoControls.value = false;
+  detailVideoMouseHover.value = !!(event.target as Element).closest('.detail-info, .detail-seek-wrap, .detail-controls');
+}
 let detailSwipeStart: { id: number; x: number; y: number } | null = null;
 let detailWheelDistance = 0;
 let detailWheelTime = 0;
@@ -2413,6 +2421,8 @@ function wheelDetailSwipe(event: WheelEvent) {
 }
 watch(showDetail, () => {
   detailVideoControls.value = false;
+  detailVideoMouseHover.value = false;
+  detailVideoKeyboard.value = true;
   detailSwipeStart = null;
   detailWheelDistance = 0;
 });
@@ -3060,6 +3070,9 @@ function onDocClick(e: MouseEvent) {
 }
 
 function onKeyDown(e: KeyboardEvent) {
+  if (showDetail.value && canShowPlaybackVideo.value && e.key === 'Tab') {
+    detailVideoKeyboard.value = true;
+  }
   if (e.defaultPrevented) return;
   const target = e.target as HTMLElement | null;
   if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.closest('select, button, a, [role=switch], [role=slider]') || target.isContentEditable)) {
@@ -5469,7 +5482,11 @@ onUnmounted(() => {
             <div class="detail-backdrop-wash" :style="detailBackdropWashStyle" />
           </div>
           <div class="detail-sheet"
-            :class="{ 'has-video': canShowPlaybackVideo, 'show-video-controls': detailVideoControls }"
+            :class="{ 'has-video': canShowPlaybackVideo, 'show-video-controls': detailVideoControls || detailVideoMouseHover, 'video-keyboard-controls': detailVideoKeyboard }"
+            @pointermove="moveDetailVideoPointer"
+            @pointerleave="detailVideoMouseHover = false"
+            @pointerdown="detailVideoKeyboard = false"
+            @keydown="detailVideoKeyboard = true"
             @pointerdown.self="startDetailSwipe"
             @pointerup="endDetailSwipe"
             @lostpointercapture="detailSwipeStart = null"
@@ -5566,7 +5583,7 @@ onUnmounted(() => {
               <button class="icon-btn" @click="playPrev">
                 <AppIcon name="previous" :size="32" />
               </button>
-              <button class="detail-play-btn" @click="event => { if (canShowPlaybackVideo && event.detail > 0) (event.currentTarget as HTMLButtonElement).blur(); togglePlay(); }">
+              <button class="detail-play-btn" @click="togglePlay">
                 <AppIcon name="play" v-if="!isPlaying" :size="28" />
                 <AppIcon name="pause" v-else :size="28" />
               </button>
@@ -5655,12 +5672,10 @@ onUnmounted(() => {
   transition: opacity 180ms ease;
 }
 .has-video :is(.detail-info, .detail-seek-wrap, .detail-controls) { pointer-events: none; }
-.has-video:is(:has(:focus-visible), .show-video-controls) :is(.detail-info, .detail-seek-wrap, .detail-controls) { opacity: 1; pointer-events: auto; }
-.has-video:is(:has(:focus-visible), .show-video-controls) .detail-video-background::after { opacity: 1; }
-@media (hover: hover) {
+.has-video:is(.video-keyboard-controls:has(:focus-visible), .show-video-controls) :is(.detail-info, .detail-seek-wrap, .detail-controls) { opacity: 1; pointer-events: auto; }
+.has-video:is(.video-keyboard-controls:has(:focus-visible), .show-video-controls) .detail-video-background::after { opacity: 1; }
+@media (any-hover: hover) {
   .has-video :is(.detail-info, .detail-seek-wrap, .detail-controls) { pointer-events: auto; }
-  .has-video:hover:has(:is(.detail-info, .detail-seek-wrap, .detail-controls):hover) :is(.detail-info, .detail-seek-wrap, .detail-controls),
-  .has-video:hover:has(:is(.detail-info, .detail-seek-wrap, .detail-controls):hover) .detail-video-background::after { opacity: 1; }
 }
 .app {
   display: grid;

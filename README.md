@@ -350,6 +350,8 @@ without the feature continue to use WebView video decoding.
 With native video enabled, library indexing uses a frame around 0.5 seconds
 as the cover for local videos. Existing videos pick up covers on reindexing;
 if a frame cannot be extracted, normal artwork fallback still applies.
+In fullscreen video, hover over the bottom controls with a mouse, tap the video
+on a touchscreen, or use Tab to reveal the controls. The close button stays visible.
 
 For a static build, run `bash scripts/prepare-video-codecs.sh <prefix> <rust-target>...`,
 set `FFMPEG_DIR` to the absolute prefix, and build with `--features native-video-static`.
