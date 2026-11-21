@@ -106,12 +106,33 @@ jobs:
             exit 1
           fi
 
+      - name: Install Make for Windows codecs
+        if: matrix.name == 'windows'
+        run: choco install make --yes --no-progress
+
+      - name: Initialize MSVC codec toolchain
+        if: matrix.name == 'windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Build native video codecs
+        shell: bash
+        run: |
+          set -euo pipefail
+          prefix="$RUNNER_TEMP/player-codecs"
+          case '${{ matrix.name }}' in
+            macos) targets=(aarch64-apple-darwin x86_64-apple-darwin) ;;
+            linux) targets=(x86_64-unknown-linux-gnu) ;;
+            windows) targets=(x86_64-pc-windows-msvc) ;;
+          esac
+          bash scripts/prepare-video-codecs.sh "$prefix" "${targets[@]}"
+          echo "FFMPEG_DIR=$prefix" >> "$GITHUB_ENV"
+
       - name: Build Tauri desktop bundles
         if: matrix.name != 'macos'
         env:
           CI: 'true'
           GITHUB_TOKEN: ${{ github.token }}
-        run: pnpm tauri build
+        run: pnpm tauri build --features native-video-static
 
       - name: Use system Wayland libraries in the AppImage
         if: matrix.os == 'ubuntu-22.04'
@@ -135,7 +156,7 @@ jobs:
         env:
           CI: 'true'
           GITHUB_TOKEN: ${{ github.token }}
-        run: pnpm tauri build --target universal-apple-darwin
+        run: pnpm tauri build --target universal-apple-darwin --features native-video-static
 
       - name: Upload desktop bundles
         uses: actions/upload-artifact@v7
@@ -241,11 +262,20 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Build Android native video codecs
+        shell: bash
+        run: |
+          set -euo pipefail
+          prefix="$RUNNER_TEMP/player-codecs"
+          bash scripts/prepare-video-codecs.sh "$prefix" aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android
+          echo "FFMPEG_DIR=$prefix" >> "$GITHUB_ENV"
+          echo "BINDGEN_EXTRA_CLANG_ARGS=--sysroot=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot" >> "$GITHUB_ENV"
+
       - name: Build Android bundle
         env:
           CI: 'true'
           GITHUB_TOKEN: ${{ github.token }}
-        run: pnpm tauri android build
+        run: pnpm tauri android build --features native-video-static
 
       - name: Prepare Android release assets
         shell: bash
@@ -302,15 +332,17 @@ jobs:
       - build-android
 
     steps:
-      - name: Checkout repository metadata
+      - name: Checkout release source
         uses: actions/checkout@v6
         with:
+          ref: ${{ inputs.tag || github.ref }}
           persist-credentials: false
-          submodules: false
-          sparse-checkout: |
-            .github
-            package.json
-            scripts
+          submodules: recursive
+
+      - name: Set up Node.js for source packaging
+        uses: actions/setup-node@v6
+        with:
+          node-version: lts/*
 
       - name: Download release artifacts
         uses: actions/download-artifact@v8
@@ -318,6 +350,9 @@ jobs:
           pattern: bundles-*
           path: release-artifacts
           merge-multiple: true
+
+      - name: Package corresponding source
+        run: bash scripts/package-release-source.sh release-artifacts
 
       - name: Generate AI release notes
         id: release_notes
@@ -328,6 +363,12 @@ jobs:
           github-api-url: ${{ github.api_url }}
           repository: ${{ github.repository }}
           tag-name: ${{ env.RELEASE_TAG }}
+
+      - name: Add FFmpeg source notice
+        env:
+          RELEASE_NOTES_PATH: ${{ steps.release_notes.outputs.notes_path }}
+        run: |
+          printf '\n### FFmpeg source and license\n\nPlayer uses FFmpeg under LGPL 2.1 or later. Download `player-corresponding-source.tar.gz` from the assets below for the license, exact sources, and rebuild instructions.\n' >> "$RELEASE_NOTES_PATH"
 
       - name: Generate Tauri updater manifest
         env:

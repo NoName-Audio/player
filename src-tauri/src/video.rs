@@ -1,3 +1,11 @@
+#[cfg(feature = "native-video")]
+pub(crate) mod native;
+
+#[tauri::command]
+pub fn native_video_enabled() -> bool {
+    cfg!(feature = "native-video")
+}
+
 use std::io::{Read, Seek, SeekFrom};
 use tauri::{http::{Request, Response, StatusCode}, Manager, Runtime, UriSchemeContext, UriSchemeResponder};
 

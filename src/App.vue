@@ -5591,10 +5591,10 @@ onUnmounted(() => {
 
 /* ── Layout ── */
 .footer-video-background { position: absolute; inset: 0; z-index: -1; overflow: hidden; pointer-events: none; }
-.footer-video-background :deep(video) { width: 100%; height: 100%; max-height: none; object-fit: cover; opacity: 0.22; }
+.footer-video-background :deep(:is(video, canvas)) { width: 100%; height: 100%; max-height: none; object-fit: cover; opacity: 0.22; }
 .footer-video-background :deep(p) { display: none; }
 .detail-video-background { position: absolute; inset: 0; z-index: -1; overflow: hidden; border-radius: inherit; pointer-events: none; }
-.detail-video-background :deep(video) { width: 100%; height: 100%; max-height: none; object-fit: contain; background: transparent; }
+.detail-video-background :deep(:is(video, canvas)) { width: 100%; height: 100%; max-height: none; object-fit: contain; background: transparent; }
 .detail-video-background :deep(p) { display: none; }
 .player-detail.video-detail { background: #000; backdrop-filter: none; }
 .detail-sheet.has-video {

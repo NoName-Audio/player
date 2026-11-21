@@ -6,6 +6,40 @@ const props = defineProps<{ sourceId: string }>();
 const url = computed(() => convertFileSrc(props.sourceId, 'player-video'));
 const video = ref<HTMLVideoElement>();
 const failed = ref(false);
+const canvas = ref<HTMLCanvasElement>();
+const legacy = ref(false);
+const native = ref(false);
+void invoke<boolean>('native_video_enabled').then((enabled) => {
+  native.value = enabled;
+  legacy.value = !enabled;
+}).catch(() => { failed.value = true; });
+watch(canvas, (element, _, cleanup) => {
+  if (!element) return;
+  const context = element.getContext('2d');
+  if (!context) { failed.value = true; return; }
+  let active = true;
+  let request = 0;
+  cleanup(() => { active = false; cancelAnimationFrame(request); });
+  async function draw() {
+    try {
+      const data = await invoke<ArrayBuffer | number[]>('native_video_frame', { sourceId: props.sourceId });
+      if (!active) return;
+      const bytes = Array.isArray(data) ? Uint8Array.from(data).buffer : data;
+      if (bytes.byteLength >= 8) {
+        const header = new DataView(bytes);
+        const width = header.getUint32(0, true);
+        const height = header.getUint32(4, true);
+        if (element!.width !== width) element!.width = width;
+        if (element!.height !== height) element!.height = height;
+        context!.putImageData(new ImageData(new Uint8ClampedArray(bytes, 8), width, height), 0, 0);
+      }
+      request = requestAnimationFrame(draw);
+    } catch {
+      if (active) failed.value = true;
+    }
+  }
+  request = requestAnimationFrame(draw);
+});
 
 // The element never outputs audio. Reconcile against consumed PCM, not the
 // seek bar's interpolated position or the video element's clock.
@@ -69,12 +103,14 @@ watch(video, (current, _, cleanup) => {
 </script>
 
 <template>
-  <video v-if="!failed" ref="video" :src="url" muted playsinline preload="auto"
+  <canvas v-if="!failed && native" ref="canvas" />
+  <video v-else-if="!failed && legacy" ref="video" :src="url" muted playsinline preload="auto"
     @loadedmetadata="failed = !($event.target as HTMLVideoElement).videoWidth"
     @error="failed = true" />
-  <p v-else role="status">Video unavailable. Audio playback is unaffected.</p>
+  <p v-else-if="failed" role="status">Video unavailable. Audio playback is unaffected.</p>
 </template>
 
 <style scoped>
-video { display: block; width: 100%; max-height: 45dvh; background: black; }
+video, canvas { display: block; width: 100%; height: 100%; background: black; }
+canvas { object-fit: inherit; }
 </style>

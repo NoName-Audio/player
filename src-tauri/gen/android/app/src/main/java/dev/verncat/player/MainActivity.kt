@@ -139,7 +139,7 @@ class MainActivity : TauriActivity() {
             @JavascriptInterface
             fun pickAudioFiles() {
                 runOnUiThread {
-                    pickFiles.launch(arrayOf("audio/*", "application/ogg", "application/octet-stream"))
+                    pickFiles.launch(arrayOf("audio/*", "video/*", "application/ogg", "application/octet-stream"))
                 }
             }
 
