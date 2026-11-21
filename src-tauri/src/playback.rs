@@ -512,8 +512,11 @@ impl PlaybackState {
             .track_gain
             .store(source.gain.to_bits(), Ordering::SeqCst);
         *self.inner.current_file.lock().unwrap() = Some(source.path.clone());
-        *self.inner.current_source.lock().unwrap() = Some(source.clone());
-        self.inner.source_id.fetch_add(1, Ordering::SeqCst);
+        {
+            let mut current = self.inner.current_source.lock().unwrap();
+            *current = Some(source.clone());
+            self.inner.source_id.fetch_add(1, Ordering::SeqCst);
+        }
 
         let shared = Arc::clone(&self.inner);
         thread::spawn(move || {
@@ -665,6 +668,16 @@ impl PlaybackState {
     }
     pub fn current_file_path(&self) -> Option<PathBuf> {
         self.inner.current_file.lock().unwrap().clone()
+    }
+
+    pub(crate) fn video_path(&self, id: &str) -> Option<PathBuf> {
+        let id = id.parse::<u64>().ok()?;
+        let source = self.inner.current_source.lock().ok()?;
+        let source = source.as_ref()?;
+        if self.is_stopped() || source.is_segment || source.follow_growing || id != self.inner.source_id.load(Ordering::SeqCst) {
+            return None;
+        }
+        Some(source.path.clone())
     }
 
     pub fn set_device(&self, name: Option<String>, sample_rate: Option<u32>) {
@@ -866,7 +879,6 @@ fn decode_thread_seek(
     shared
         .source_sample_rate
         .store(sample_rate as u64, Ordering::SeqCst);
-    let channels = codec_params.channels.map(|c| c.count()).unwrap_or(2);
     let output_sample_rate = shared
         .selected_sample_rate
         .lock()
@@ -878,13 +890,16 @@ fn decode_thread_seek(
         let dur_ms = (duration_secs.max(0.0) * 1000.0) as u64;
         shared.duration_ms.store(dur_ms, Ordering::SeqCst);
     } else if let Some(n_frames) = codec_params.n_frames {
-        let dur_ms = (n_frames as f64 / sample_rate as f64 * 1000.0) as u64;
+        let seconds = packet_time_secs(&codec_params, n_frames)
+            .unwrap_or(n_frames as f64 / sample_rate as f64);
+        let dur_ms = (seconds * 1000.0) as u64;
         shared.duration_ms.store(dur_ms, Ordering::SeqCst);
     }
 
     let mut decoder = crate::audio_codecs::registry()
         .make(&codec_params, &DecoderOptions::default())
         .map_err(|e| format!("decoder error: {e}"))?;
+    let channels = decoder.codec_params().channels.map(|c| c.count()).unwrap_or(2);
 
     // Seek if requested
     let absolute_seek_secs = source.segment_start_secs + seek_secs.max(0.0);
@@ -1332,6 +1347,7 @@ pub fn playback_spectrum(state: tauri::State<'_, PlaybackState>) -> Vec<f32> {
 #[derive(serde::Serialize)]
 pub struct PlaybackStatus {
     pub source_id: Option<String>,
+    pub video_available: bool,
     pub playing: bool,
     pub finished: bool,
     pub position: f64,
@@ -1341,12 +1357,14 @@ pub struct PlaybackStatus {
 
 #[tauri::command]
 pub fn playback_status(state: tauri::State<'_, PlaybackState>) -> PlaybackStatus {
+    let id = state.inner.source_id.load(Ordering::SeqCst).to_string();
     PlaybackStatus {
         source_id: if state.is_stopped() || state.current_file_path().is_none() {
             None
         } else {
-            Some(state.inner.source_id.load(Ordering::SeqCst).to_string())
+            Some(id.clone())
         },
+        video_available: state.video_path(&id).is_some_and(|path| crate::video::supported(&path)),
         playing: state.is_playing(),
         finished: state.is_finished(),
         position: state.position_secs(),

@@ -40,6 +40,7 @@ import AppSelect from "./components/AppSelect.vue";
 import PlaylistArtwork from "./components/PlaylistArtwork.vue";
 import AppTopbar from "./components/AppTopbar.vue";
 import PlayerBar from "./components/PlayerBar.vue";
+import PlaybackVideo from './components/PlaybackVideo.vue';
 import SeekSpectrum from "./components/SeekSpectrum.vue";
 import WebGLAlbumRenderer from "./components/WebGLAlbumRenderer.vue";
 import ResponsivePopup from "./components/ResponsivePopup.vue";
@@ -578,7 +579,7 @@ const newPlaylistName = ref('');
 const homePinnedRegularTracks = ref<Record<number, Track[]>>({});
 // context menu for "add to playlist"
 const addToPlaylistMenu = ref<{ track: Track; x: number; y: number } | null>(null);
-const trackContextMenu = ref<{ track: Track; x: number; y: number; playlistId: number | null } | null>(null);
+const trackContextMenu = ref<{ track: Track; x: number; y: number; playlistId: number | null; fromDetail?: boolean } | null>(null);
 const homePinnedContextMenu = ref<{ item: HomePinnedPlaylistItem; x: number; y: number } | null>(null);
 const TRACK_MENU_MARGIN = 12;
 const TRACK_MENU_WIDTH = 240;
@@ -722,6 +723,12 @@ function openTrackContextMenu(e: MouseEvent, track: Track, playlistId: number | 
   e.preventDefault();
   e.stopPropagation();
   openTrackContextMenuAt(track, e.clientX, e.clientY, playlistId);
+}
+
+function openDetailTrackMenu(event: MouseEvent) {
+  if (!nowPlaying.value) return;
+  openTrackContextMenu(event, nowPlaying.value);
+  if (trackContextMenu.value) trackContextMenu.value.fromDetail = true;
 }
 
 function openHomePinnedContextMenuAt(item: HomePinnedPlaylistItem, x: number, y: number) {
@@ -868,6 +875,7 @@ function toggleLikeFromTrackContext() {
 
 function editTrackFromTrackContext() {
   const track = trackContextMenu.value?.track;
+  if (trackContextMenu.value?.fromDetail) showDetail.value = false;
   trackContextMenu.value = null;
   if (!track) return;
   openEditor(track);
@@ -2369,7 +2377,7 @@ function jumpToQueueItem(index: number) {
   showQueueMenu.value = false;
 }
 
-interface PlaybackStatus { source_id?: string | null; playing: boolean; finished: boolean; position: number; duration: number; source_sample_rate?: number | null; }
+interface PlaybackStatus { source_id?: string | null; video_available?: boolean; playing: boolean; finished: boolean; position: number; duration: number; source_sample_rate?: number | null; }
 
 interface NativePlaybackSession {
   playback: PlaybackStatus;
@@ -2380,6 +2388,73 @@ interface NativePlaybackSession {
   tracks: Track[];
 }
 const nativePlaybackSourceId = ref<string | null>(null);
+const footerVideoTarget = ref<HTMLElement | null>(null);
+const playbackVideo = ref<InstanceType<typeof PlaybackVideo> | null>(null);
+const savingFrameCover = ref(false);
+async function saveVideoFrameCover() {
+  const menu = trackContextMenu.value;
+  const video = playbackVideo.value;
+  if (!menu?.fromDetail || menu.track.id !== nowPlaying.value?.id || !video || savingFrameCover.value) return;
+  trackContextMenu.value = null;
+  savingFrameCover.value = true;
+  try {
+    const png = await video.captureFrame();
+    const track = await invoke<Track>('set_video_frame_cover', { id: menu.track.id, png });
+    applyIdentifiedTrack(track);
+  } catch (error) {
+    alert(`Could not use the video frame as cover.\n${String(error)}`);
+  } finally {
+    savingFrameCover.value = false;
+  }
+}
+const detailVideoTarget = ref<HTMLElement | null>(null);
+const detailVideoControls = ref(false);
+const detailVideoMouseHover = ref(false);
+const detailVideoKeyboard = ref(true);
+function moveDetailVideoPointer(event: PointerEvent) {
+  if (event.pointerType !== 'mouse') return;
+  detailVideoKeyboard.value = false;
+  detailVideoControls.value = false;
+  detailVideoMouseHover.value = !!(event.target as Element).closest('.detail-info, .detail-seek-wrap, .detail-controls');
+}
+let detailSwipeStart: { id: number; x: number; y: number } | null = null;
+let detailWheelDistance = 0;
+let detailWheelTime = 0;
+function startDetailSwipe(event: PointerEvent) {
+  if (!canShowPlaybackVideo.value || !event.isPrimary || event.button !== 0) return;
+  detailSwipeStart = { id: event.pointerId, x: event.clientX, y: event.clientY };
+  (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+}
+function endDetailSwipe(event: PointerEvent) {
+  const start = detailSwipeStart;
+  if (!start || start.id !== event.pointerId) return;
+  detailSwipeStart = null;
+  const down = event.clientY - start.y;
+  const across = Math.abs(event.clientX - start.x);
+  if (down >= 64 && down > across * 1.5) showDetail.value = false;
+  else if (event.pointerType !== 'mouse' && Math.abs(down) < 12 && across < 12) {
+    detailVideoControls.value = !detailVideoControls.value;
+  }
+}
+function wheelDetailSwipe(event: WheelEvent) {
+  if (!canShowPlaybackVideo.value || event.ctrlKey || event.deltaMode !== 0) return;
+  if (event.timeStamp - detailWheelTime > 160 || event.deltaY <= Math.abs(event.deltaX)) detailWheelDistance = 0;
+  detailWheelTime = event.timeStamp;
+  if (event.deltaY <= Math.abs(event.deltaX)) return;
+  detailWheelDistance += event.deltaY;
+  if (detailWheelDistance >= 72) showDetail.value = false;
+}
+watch(showDetail, () => {
+  if (trackContextMenu.value?.fromDetail) trackContextMenu.value = null;
+  detailVideoControls.value = false;
+  detailVideoMouseHover.value = false;
+  detailVideoKeyboard.value = true;
+  detailSwipeStart = null;
+  detailWheelDistance = 0;
+});
+const playbackVideoTarget = computed(() => (showDetail.value ? detailVideoTarget.value : null) ?? footerVideoTarget.value);
+const nativeVideoAvailable = ref(false);
+const canShowPlaybackVideo = computed(() => !remoteOutputPeer.value && !!nativePlaybackSourceId.value && nativeVideoAvailable.value);
 const playbackRestoring = ref(true);
 let playbackRestorePromise: Promise<void> | null = null;
 let playbackRestoreDisposed = false;
@@ -2418,6 +2493,7 @@ async function restorePlaybackSession() {
     if (playbackRestoreDisposed || sequence !== playbackTransitionSequence) return;
     libraryDataDir.value = session.library_dir;
     nativePlaybackSourceId.value = session.playback.source_id ?? null;
+    nativeVideoAvailable.value = !!session.playback.video_available;
     volume.value = Math.round(session.volume * 100);
     if (context?.remotePeer && context.libraryDir === session.library_dir) {
       try {
@@ -2660,6 +2736,7 @@ async function refreshPlaybackState() {
   if (stale()) return snapshot();
   appliedPlaybackStatusRequest = request;
   nativePlaybackSourceId.value = st.source_id ?? null;
+  nativeVideoAvailable.value = !!st.video_available;
   const currentTrack = nowPlaying.value;
   const metadataDuration = Math.floor(currentTrack?.duration_secs ?? 0);
   const reportedDuration = st.duration > 0 ? Math.floor(st.duration) : 0;
@@ -3019,6 +3096,9 @@ function onDocClick(e: MouseEvent) {
 }
 
 function onKeyDown(e: KeyboardEvent) {
+  if (showDetail.value && canShowPlaybackVideo.value && e.key === 'Tab') {
+    detailVideoKeyboard.value = true;
+  }
   if (e.defaultPrevented) return;
   const target = e.target as HTMLElement | null;
   if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.closest('select, button, a, [role=switch], [role=slider]') || target.isContentEditable)) {
@@ -4978,6 +5058,8 @@ onUnmounted(() => {
     </main>
 
     <!-- Context menus -->
+    <Teleport to="body">
+    <div class="detail-track-popups">
     <ResponsivePopup
       :open="!!trackContextMenu"
       :anchor-x="trackContextMenu?.x ?? null"
@@ -4989,12 +5071,13 @@ onUnmounted(() => {
       <template v-if="trackContextMenu">
         <div class="playlist-menu-header">Track actions</div>
         <button class="playlist-menu-item" @click="toggleLikeFromTrackContext">{{ trackContextMenu.track.is_liked ? 'Unlike' : 'Like' }}</button>
-        <button v-if="hasArtistPage(trackContextMenu.track.artist)" class="playlist-menu-item" @click="openArtist(trackContextMenu.track.artist); trackContextMenu = null">Go to artist</button>
-        <button v-if="trackContextMenu.track.album" class="playlist-menu-item" @click="openAlbum(trackContextMenu.track.album, trackContextMenu.track.album_artist_or_artist ?? ''); trackContextMenu = null">Go to album</button>
+        <button v-if="hasArtistPage(trackContextMenu.track.artist)" class="playlist-menu-item" @click="openArtist(trackContextMenu.track.artist); if (trackContextMenu.fromDetail) showDetail = false; trackContextMenu = null">Go to artist</button>
+        <button v-if="trackContextMenu.track.album" class="playlist-menu-item" @click="openAlbum(trackContextMenu.track.album, trackContextMenu.track.album_artist_or_artist ?? ''); if (trackContextMenu.fromDetail) showDetail = false; trackContextMenu = null">Go to album</button>
         <button v-for="action in pluginTrackActions" :key="action.key" class="playlist-menu-item" @click="runPluginTrackAction(action)">{{ action.label }}</button>
         <button class="playlist-menu-item" @click="shareTrackFromTrackContext">Share</button>
         <button class="playlist-menu-item" @click="addTrackToPlaylistFromTrackContext">Add to playlist</button>
         <button class="playlist-menu-item" @click="editTrackFromTrackContext">Edit metadata</button>
+        <button v-if="trackContextMenu.fromDetail && canShowPlaybackVideo && trackContextMenu.track.id > 0 && !trackContextMenu.track.plugin_source && trackContextMenu.track.id === nowPlaying?.id" class="playlist-menu-item" :disabled="savingFrameCover" @click="saveVideoFrameCover">Use current frame as cover</button>
         <button class="playlist-menu-item" @click="identifyTrackFromTrackContext">Identify</button>
         <button
           v-if="trackContextMenu.playlistId !== null"
@@ -5006,6 +5089,8 @@ onUnmounted(() => {
         <button class="playlist-menu-item danger" @click="hideTrackAsDuplicateFromTrackContext">Hide (mark as duplicate)</button>
       </template>
     </ResponsivePopup>
+    </div>
+    </Teleport>
 
     <ResponsivePopup
       :open="!!homePinnedContextMenu"
@@ -5025,6 +5110,8 @@ onUnmounted(() => {
       </template>
     </ResponsivePopup>
 
+    <Teleport to="body">
+    <div class="detail-track-popups">
     <ResponsivePopup
       :open="!!addToPlaylistMenu"
       :anchor-x="addToPlaylistMenu?.x ?? null"
@@ -5046,6 +5133,8 @@ onUnmounted(() => {
         </button>
       </template>
     </ResponsivePopup>
+    </div>
+    </Teleport>
 
     <Transition name="modal">
       <div v-if="updatePromptOpen" class="modal-overlay" @click.self="updatePromptOpen = false">
@@ -5409,22 +5498,44 @@ onUnmounted(() => {
       @pick-remote-device="pickRemoteDevice"
       @set-volume="applyVolume"
       @toggle-mute="toggleMute"
-    ><template #plugin-status><PluginPanel v-for="widget in pluginWidgets.filter(w => w.slot === 'player.status')" :key="widget.key" class="player-plugin-status" :plugin-id="widget.pluginId" :view-id="widget.id" /></template><template #plugin-actions><PluginPanel v-for="widget in pluginWidgets.filter(w => w.slot === 'player.actions')" :key="widget.key" :plugin-id="widget.pluginId" :view-id="widget.id" /></template></PlayerBar>
+    >
+      <template #video-background><div v-if="canShowPlaybackVideo" ref="footerVideoTarget" class="footer-video-background" aria-hidden="true" /></template>
+      <template #plugin-status><PluginPanel v-for="widget in pluginWidgets.filter(w => w.slot === 'player.status')" :key="widget.key" class="player-plugin-status" :plugin-id="widget.pluginId" :view-id="widget.id" /></template>
+      <template #plugin-actions><PluginPanel v-for="widget in pluginWidgets.filter(w => w.slot === 'player.actions')" :key="widget.key" :plugin-id="widget.pluginId" :view-id="widget.id" /></template>
+    </PlayerBar>
+    <Teleport v-if="canShowPlaybackVideo && nativePlaybackSourceId && playbackVideoTarget" :to="playbackVideoTarget">
+      <PlaybackVideo ref="playbackVideo" :key="nativePlaybackSourceId" :source-id="nativePlaybackSourceId" />
+    </Teleport>
   </div>
 
   <!-- Player detail overlay — teleported to body to escape footer stacking context -->
   <Teleport to="body">
     <Transition name="detail">
-      <div v-if="showDetail && nowPlaying" class="player-detail" @click.self="showDetail = false">
-          <div class="detail-backdrop" aria-hidden="true">
+      <div v-if="showDetail && nowPlaying" class="player-detail" :class="{ 'video-detail': canShowPlaybackVideo }" @click.self="showDetail = false">
+          <div v-if="!canShowPlaybackVideo" class="detail-backdrop" aria-hidden="true">
             <CoverImage class="detail-backdrop-image" :src="currentCoverUrl" :placeholder="currentTrack.colors" />
             <div class="detail-backdrop-wash" :style="detailBackdropWashStyle" />
           </div>
-          <div class="detail-sheet">
+          <div class="detail-sheet"
+            :class="{ 'has-video': canShowPlaybackVideo, 'show-video-controls': detailVideoControls || detailVideoMouseHover, 'video-keyboard-controls': detailVideoKeyboard }"
+            @contextmenu="openDetailTrackMenu"
+            @pointermove="moveDetailVideoPointer"
+            @pointerleave="detailVideoMouseHover = false"
+            @pointerdown="detailVideoKeyboard = false"
+            @keydown="detailVideoKeyboard = true"
+            @pointerdown.self="startDetailSwipe"
+            @pointerup="endDetailSwipe"
+            @lostpointercapture="detailSwipeStart = null"
+            @wheel.self.passive="wheelDetailSwipe"
+          >
+            <div v-if="canShowPlaybackVideo" ref="detailVideoTarget" class="detail-video-background" aria-hidden="true" />
             <!-- drag handle -->
-            <div class="detail-handle" @click="showDetail = false" />
+            <button v-if="canShowPlaybackVideo" type="button" class="icon-btn detail-video-close" aria-label="Close Now Playing" @click="showDetail = false">
+              <AppIcon name="close" :size="22" />
+            </button>
+            <div v-else class="detail-handle" @click="showDetail = false" />
             <!-- cover 3D card -->
-            <div class="detail-cover-wrap"
+            <div v-if="!canShowPlaybackVideo" class="detail-cover-wrap"
               :style="{
                 transform: `scale(${beatScale})`,
                 transformOrigin: 'center center',
@@ -5528,10 +5639,81 @@ onUnmounted(() => {
 
 <style scoped>
 .detail-static-cover { position: absolute; inset: 15%; border-radius: 14px; box-shadow: 0 20px 50px color-mix(in srgb, var(--color-shadow) 40%, transparent); }
+.detail-track-popups { position: relative; z-index: 1001; }
 .page-title-input { width: 100%; min-width: 0; padding: 0; border: 0; border-radius: 4px; background: transparent; color: inherit; font: inherit; letter-spacing: inherit; }
 .page-title-input:focus-visible { outline: 2px solid var(--color-accent); outline-offset: -2px; }
 
 /* ── Layout ── */
+.footer-video-background { position: absolute; inset: 0; z-index: -1; overflow: hidden; pointer-events: none; }
+.footer-video-background :deep(:is(video, canvas)) { width: 100%; height: 100%; max-height: none; object-fit: cover; opacity: 0.22; }
+.footer-video-background :deep(p) { display: none; }
+.detail-video-background { position: absolute; inset: 0; z-index: -1; overflow: hidden; border-radius: inherit; pointer-events: none; }
+.detail-video-background :deep(:is(video, canvas)) { width: 100%; height: 100%; max-height: none; object-fit: contain; background: transparent; }
+.detail-video-background :deep(p) { display: none; }
+.player-detail.video-detail { background: #000; backdrop-filter: none; }
+.detail-sheet.has-video {
+  height: 100dvh;
+  box-sizing: border-box;
+  padding-top: max(var(--space-3), env(safe-area-inset-top));
+  max-height: none;
+  max-width: none;
+  border: none;
+  border-radius: 0;
+  background: #000;
+  backdrop-filter: none;
+  color: #fff;
+  touch-action: none;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: 1fr auto auto auto;
+  row-gap: var(--space-2);
+  padding-bottom: calc(var(--space-3) + env(safe-area-inset-bottom));
+}
+.has-video .detail-video-close {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  line-height: 1;
+  position: absolute;
+  z-index: 1;
+  top: max(var(--space-3), env(safe-area-inset-top));
+  right: max(var(--space-3), env(safe-area-inset-right));
+  color: #fff;
+  background: rgb(0 0 0 / 55%);
+}
+.has-video :is(.detail-info, .detail-seek-wrap, .detail-controls) {
+  grid-column: 1;
+  justify-self: center;
+  width: min(100%, 360px);
+  min-width: 0;
+}
+.has-video .detail-info { grid-row: 2; margin-top: auto; }
+.has-video .detail-seek-wrap { grid-row: 3; }
+.has-video .detail-controls {
+  grid-row: 4;
+  justify-content: center;
+  gap: clamp(0px, 2vw, 8px);
+}
+.has-video .detail-seek-wrap { gap: var(--space-1); }
+.has-video .detail-video-background::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(transparent 20%, rgb(0 0 0 / 85%));
+}
+.has-video :is(.detail-info, .detail-seek-wrap, .detail-controls),
+.has-video .detail-video-background::after {
+  opacity: 0;
+  transition: opacity 180ms ease;
+}
+.has-video :is(.detail-info, .detail-seek-wrap, .detail-controls) { pointer-events: none; }
+.has-video:is(.video-keyboard-controls:has(:focus-visible), .show-video-controls) :is(.detail-info, .detail-seek-wrap, .detail-controls) { opacity: 1; pointer-events: auto; }
+.has-video:is(.video-keyboard-controls:has(:focus-visible), .show-video-controls) .detail-video-background::after { opacity: 1; }
+@media (any-hover: hover) {
+  .has-video :is(.detail-info, .detail-seek-wrap, .detail-controls) { pointer-events: auto; }
+}
 .app {
   display: grid;
   grid-template-columns: 220px minmax(0, 1fr);
@@ -6727,6 +6909,7 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: var(--spa
 
 .detail-sheet {
   position: relative;
+  isolation: isolate;
   width: 100%;
   max-width: 480px;
   max-height: 95vh;

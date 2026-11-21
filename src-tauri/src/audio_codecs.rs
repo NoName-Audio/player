@@ -126,6 +126,24 @@ impl Decoder for OpusDecoder {
         if normalized.channels.is_none() {
             normalized.channels = normalized.channel_layout.map(|layout| layout.into_channels());
         }
+        // Symphonia 0.5 prefixes MP4 dOps with OpusHead but leaves the
+        // version and big-endian fields unchanged and omits the channel mask.
+        if let Some(data) = normalized.extra_data.as_mut() {
+            if data.len() >= 19 && &data[..9] == b"OpusHead\0" {
+                data[8] = 1;
+                data[10..12].reverse();
+                data[12..16].reverse();
+                data[16..18].reverse();
+                if normalized.channels.is_none() {
+                    use symphonia::core::audio::Layout;
+                    normalized.channels = match data[9] {
+                        1 => Some(Layout::Mono.into_channels()),
+                        2 => Some(Layout::Stereo.into_channels()),
+                        _ => None,
+                    };
+                }
+            }
+        }
         let params = &normalized;
         let header = parse_header(params)?;
         let channels = header.mapping.len();
@@ -251,6 +269,13 @@ mod tests {
         assert!(frames > 18 * OPUS_RATE as usize);
     }
 
+    #[test]
+    fn mp4_opus_dops_decodes_without_container_channel_mask() {
+        let (_, output) = decode(include_bytes!("../tests/fixtures/mp4-opus.mp4"), 0.0, None);
+        assert_eq!(output.len(), 2);
+        assert!(output.iter().all(|channel| channel.iter().any(|sample| sample.abs() > 0.01)));
+    }
+
     fn decode(data: &[u8], seek: f64, end: Option<f64>) -> (CodecParameters, Vec<Vec<f32>>) {
         let source =
             MediaSourceStream::new(Box::new(Cursor::new(data.to_vec())), Default::default());
@@ -266,14 +291,14 @@ mod tests {
             )
             .unwrap()
             .format;
-        let track = format.default_track().unwrap();
+        let track = format.tracks().iter().find(|track| track.codec_params.sample_rate.is_some()).unwrap();
         let id = track.id;
         let params = track.codec_params.clone();
         let mut decoder = registry()
             .make(&params, &DecoderOptions::default())
             .unwrap();
         let rate = params.sample_rate.unwrap();
-        let mut output = vec![Vec::new(); params.channels.unwrap().count()];
+        let mut output = vec![Vec::new(); decoder.codec_params().channels.unwrap().count()];
         if seek > 0.0 {
             let from = (seek - 0.080).max(0.0);
             format

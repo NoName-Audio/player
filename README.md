@@ -159,7 +159,8 @@ does not open a permission prompt from the background.
 ### Playback
 
 - Native audio decoding and playback in Rust, for FLAC, MP3, Ogg Vorbis, Opus, WAV, and AAC/ALAC.
-- Opus playback through bundled libopus, including seeking, encoder delay, and end padding.
+- Opus playback through bundled libopus, including mono and stereo Opus in MP4 containers.
+- Local MP4, M4V, and WebM video appears behind the playback controls. Now Playing fills the app window with uncropped video, without album art or beat-reactive blur. Hover over the bottom controls, use keyboard focus, or tap the video to reveal playback controls. Hover over the top-right corner to reveal the close button; tapping the video or focusing the button also reveals it. Swiping down closes the view. Video follows native audio and requires WebView codec support.
 - Seek, pause, resume, stop, and volume control.
 - Output device and sample rate selection.
 - Queue with shuffle, repeat, and up-next, across lists of any length.
@@ -338,6 +339,43 @@ pnpm install
 ```bash
 pnpm tauri dev
 ```
+
+
+To test native video decoding with FFmpeg 9 installed (development headers,
+`pkg-config`, and libclang available), run `pnpm tauri dev --features native-video`.
+This mode decodes only the video stream in Rust, selects frames against native
+audio position, and draws them to a canvas in the existing video surfaces.
+Frames are currently limited to 1280×720 for transfer to the canvas. Builds
+without the feature continue to use WebView video decoding.
+With native video enabled, library indexing uses a frame around 0.5 seconds
+as the cover for local videos. Existing videos pick up covers on reindexing;
+if a frame cannot be extracted, normal artwork fallback still applies.
+In fullscreen video, hover over the bottom controls with a mouse, tap the video
+on a touchscreen, or use Tab to reveal the controls. The close button stays visible.
+Right-click Now Playing to open the library track menu. For a local video in
+the library, **Use current frame as cover** saves the displayed frame as the
+track's cover without modifying the video file.
+
+For a static build, run `bash scripts/prepare-video-codecs.sh <prefix> <rust-target>...`,
+set `FFMPEG_DIR` to the absolute prefix, and build with `--features native-video-static`.
+Android also requires `BINDGEN_EXTRA_CLANG_ARGS=--sysroot=<NDK LLVM sysroot>`.
+Release builds enable `native-video-static` on all platforms. Each GitHub release
+includes `player-corresponding-source.tar.gz` with the Player sources (including
+the plugin SDK), the exact FFmpeg source archive, and the LGPL license text.
+
+To rebuild from that archive, extract it and run the following from `player/`:
+
+1. Install the platform prerequisites in [the release workflow](.github/workflows/release.yml),
+   then run `pnpm install --frozen-lockfile`. The SDK is already included.
+2. Extract `../ffmpeg-9.0.2.tar.xz` and optionally modify FFmpeg. Set
+   `FFMPEG_SOURCE_DIR` to the absolute path of the extracted `ffmpeg-9.0.2` directory
+   before running `scripts/prepare-video-codecs.sh` as described above.
+3. Run `pnpm tauri build --no-bundle --features native-video-static` for Linux or
+   Windows. For macOS add `--target universal-apple-darwin` and prepare both
+   `aarch64-apple-darwin` and `x86_64-apple-darwin` codec targets. For Android,
+   prepare the four Rust targets specified in the workflow and run
+   `pnpm tauri android build --debug --apk --features native-video-static`.
+   Official signing keys are not needed for these local builds.
 
 ### Plaintext plugin credentials (desktop opt-in)
 

@@ -39,7 +39,7 @@ use walkdir::WalkDir;
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 const AUDIO_EXTENSIONS: &[&str] = &[
-    "mp3", "flac", "ogg", "opus", "aac", "m4a", "mp4", "wav", "wv", "ape",
+    "mp3", "flac", "ogg", "opus", "aac", "m4a", "mp4", "m4v", "webm", "wav", "wv", "ape",
 ];
 
 const CUE_EXTENSIONS: &[&str] = &["cue"];
@@ -1043,6 +1043,7 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN disc_number INTEGER");
     let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN cover_hash TEXT");
     let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN identified_cover_hash TEXT");
+    let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN manual_cover_hash TEXT");
     conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_tracks_cover_hash ON tracks(cover_hash)")?;
     // Recreated on every start so changes to its definition take effect.
     conn.execute_batch(&format!(
@@ -1236,8 +1237,9 @@ fn persist_track_cover(
     conn.execute(
         "UPDATE tracks
             SET cover_data = NULL,
-                cover_hash = COALESCE(?1, identified_cover_hash),
-                cover_mime = CASE WHEN ?1 IS NULL AND identified_cover_hash IS NULL THEN NULL ELSE cover_mime END
+                cover_hash = COALESCE(manual_cover_hash, ?1, identified_cover_hash),
+                cover_mime = CASE WHEN manual_cover_hash IS NOT NULL THEN 'image/png'
+                    WHEN ?1 IS NULL AND identified_cover_hash IS NULL THEN NULL ELSE cover_mime END
           WHERE id = ?2",
         params![cover_hash, track_id],
     )?;
@@ -1873,6 +1875,13 @@ pub(crate) fn index_file(conn: &Connection, data_dir: &Path, abs: &Path) -> Resu
     let mut source_paths = vec![abs];
     if let Some(cover) = &sidecar_cover { source_paths.push(&cover.abs_path); }
     let fingerprint = indexing_fingerprint(&source_paths);
+    #[cfg(feature = "native-video")]
+    let fingerprint = fingerprint.map(|mut value| {
+        if crate::video::supported(abs) {
+            value.push_str("video-cover-v1;");
+        }
+        value
+    });
 
     let modified_secs = path_modified_secs(abs);
     let now_secs = std::time::SystemTime::now()
@@ -2375,6 +2384,40 @@ fn hash_virtual_track(parts: &[&str]) -> String {
     )
 )]
 fn read_audio_meta(path: &Path, sidecar_cover: Option<&SidecarCoverCandidate>) -> Meta {
+    let meta = read_tagged_audio_meta(path, sidecar_cover);
+    #[cfg(feature = "native-video")]
+    if crate::video::supported(path) {
+        if let Some(cover) = crate::video::native::cover(path) {
+            return Meta {
+                cover_data: Some(cover),
+                cover_mime: Some("image/png".into()),
+                cover_source_path: None,
+                cover_source_mtime: 0,
+                ..meta
+            };
+        }
+    }
+    meta
+}
+
+#[cfg(all(test, feature = "native-video"))]
+#[test]
+fn video_metadata_uses_frame_instead_of_sidecar() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let sidecar = SidecarCoverCandidate {
+        abs_path: root.join("cover.jpg"),
+        rel_path: "cover.jpg".into(),
+        modified_secs: 42,
+        mime: "image/jpeg".into(),
+    };
+    let meta = read_audio_meta(&root.join("mp4-opus.mp4"), Some(&sidecar));
+    assert_eq!(meta.cover_mime.as_deref(), Some("image/png"));
+    let cover = image::load_from_memory(&meta.cover_data.unwrap()).unwrap();
+    assert_eq!((cover.width(), cover.height()), (32, 32));
+    assert!(meta.cover_source_path.is_none());
+}
+
+fn read_tagged_audio_meta(path: &Path, sidecar_cover: Option<&SidecarCoverCandidate>) -> Meta {
     let tagged = match Probe::open(path).ok().and_then(|p| p.read().ok()) {
         Some(t) => t,
         None => {
@@ -3287,6 +3330,39 @@ fn handle_fs_events_batch(
 }
 
 // ── Tauri commands ────────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn set_video_frame_cover(
+    id: i64,
+    png: Vec<u8>,
+    state: tauri::State<'_, LibraryState>,
+    app: tauri::AppHandle,
+) -> Result<Track, String> {
+    use tauri::Emitter;
+    if png.len() > 4 * 1024 * 1024 || !png.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return Err("Invalid video frame image".into());
+    }
+    let conn = state.conn();
+    let dir = state.data_dir().to_path_buf();
+    let track = {
+        let db = conn.lock().unwrap();
+        get_track_by_id(&db, id).map_err(|err| err.to_string())?
+    };
+    if !crate::video::supported(Path::new(&track.path)) {
+        return Err("Track is not a local video".into());
+    }
+    let hash = covers::store(&dir, &png).ok_or("Could not store video cover")?;
+    let updated = {
+        let db = conn.lock().unwrap();
+        db.execute(
+            "UPDATE tracks SET manual_cover_hash = ?1, cover_hash = ?1, cover_mime = 'image/png' WHERE id = ?2 AND path = ?3",
+            params![hash, id, track.path],
+        ).map_err(|err| err.to_string())?;
+        get_track_by_id(&db, id).map_err(|err| err.to_string())?
+    };
+    let _ = app.emit("library-changed", ());
+    Ok(updated)
+}
 
 #[tauri::command]
 pub fn search_tracks(
