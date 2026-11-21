@@ -505,6 +505,7 @@ onUnmounted(() => {
     </div>
 
     <footer class="player">
+    <slot name="video-background" />
     <div v-if="spectrumActive && !reduceMotion" class="footer-spectrum" aria-hidden="true">
       <span v-for="(level, index) in spectrumLevels" :key="index"
         class="footer-spectrum-bar" :style="{ transform: `scaleY(${Math.min(1, level * (isPlaying ? beatScale : 1))})` }" />
