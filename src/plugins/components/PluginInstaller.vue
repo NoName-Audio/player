@@ -128,6 +128,9 @@ async function loadCatalogPlugin(entry: CatalogEntry) {
     const downloaded = await invoke<PluginDownload>('plugins_download', {
       url: packageUrl, expectedId: entry.id,
     });
+    if (entry.tags.includes('github-latest') && downloaded.manifest.version !== entry.version) {
+      throw new Error('Downloaded plugin version does not match the selected release');
+    }
     showPreview('', downloaded);
   } catch (e) {
     error.value = String(e);

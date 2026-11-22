@@ -200,9 +200,85 @@ where
     })
 }
 
+#[derive(Clone, serde::Deserialize)]
+struct GithubRelease {
+    tag_name: String,
+    draft: bool,
+    prerelease: bool,
+    assets: Vec<GithubAsset>,
+}
+
+#[derive(Clone, serde::Deserialize)]
+struct GithubAsset {
+    name: String,
+    browser_download_url: String,
+}
+
+fn github_repo(repository: &str) -> Option<&str> {
+    let path = repository.strip_prefix("https://github.com/")?.trim_end_matches('/');
+    let (owner, repo) = path.split_once('/')?;
+    [owner, repo].iter().all(|part| !part.is_empty() && *part != "." && *part != ".." && part.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))).then_some(path)
+}
+
+fn apply_release(entry: &mut Entry, repo: &str, target: &str, release: &GithubRelease) -> Option<()> {
+    let version = release.tag_name.strip_prefix('v').unwrap_or(&release.tag_name);
+    let mut parts = version.split('.');
+    if release.draft || release.prerelease || !(0..3).all(|_| parts.next().is_some_and(|p| p.parse::<u32>().is_ok() && p.bytes().all(|b| b.is_ascii_digit()))) || parts.next().is_some() {
+        return None;
+    }
+    let prefix = format!("https://github.com/{repo}/releases/download/{}/", release.tag_name);
+    let asset = |name: &str| release.assets.iter().find(|a| a.name == name && a.browser_download_url.strip_prefix(&prefix) == Some(name)).map(|a| a.browser_download_url.clone());
+    let abi = match target {
+        "android-aarch64" => Some("arm64-v8a"),
+        "android-arm" => Some("armeabi-v7a"),
+        "android-x86" => Some("x86"),
+        "android-x86_64" => Some("x86_64"),
+        _ => None,
+    };
+    let android = abi.and_then(|abi| asset(&format!("{}-android-{abi}.apk", entry.id)));
+    let desktop = ["macos-aarch64", "macos-x86_64", "linux-aarch64", "linux-x86_64", "windows-aarch64", "windows-x86_64"]
+        .into_iter()
+        .filter(|target| entry.platforms.iter().any(|platform| target.split_once('-').is_some_and(|(os, _)| os == platform)))
+        .filter_map(|target| asset(&format!("{}-{target}.player-plugin", entry.id)).map(|url| (target.to_owned(), url)))
+        .collect();
+    entry.version = Some(version.into());
+    entry.android_apk_url = android;
+    entry.install_urls = desktop;
+    entry.install_url = None;
+    Some(())
+}
+
+async fn resolve_release(entry: &mut Entry, target: &str) {
+    if !entry.tags.iter().any(|tag| tag == "github-latest") { return; }
+    let Some(repo) = github_repo(&entry.repository).map(str::to_owned) else { return; };
+    static CACHE: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, GithubRelease>>> =
+        std::sync::LazyLock::new(Default::default);
+    let url = format!("https://api.github.com/repos/{repo}/releases/latest");
+    let fresh = match fetch(&url).await {
+        Ok(bytes) => serde_json::from_slice::<GithubRelease>(&bytes).ok(),
+        Err(_) => None,
+    };
+    if let Some(release) = fresh {
+        if apply_release(entry, &repo, target, &release).is_some() {
+            CACHE.lock().unwrap().insert(repo, release);
+            return;
+        }
+    }
+    if let Some(release) = CACHE.lock().unwrap().get(&repo) {
+        apply_release(entry, &repo, target, release);
+    } else if target.starts_with("android-") && target != "android-aarch64" {
+        entry.android_apk_url = None;
+    }
+}
+
 pub async fn load() -> Result<Listing, String> {
     let url = option_env!("PLAYER_PLUGIN_CATALOG_URL").unwrap_or(DEFAULT_URL);
-    load_with(url, || fetch(url)).await
+    let mut listing = load_with(url, || fetch(url)).await?;
+    use futures_util::StreamExt;
+    futures_util::stream::iter(listing.catalog.plugins.iter_mut())
+        .for_each_concurrent(4, |entry| resolve_release(entry, &listing.native_target))
+        .await;
+    Ok(listing)
 }
 
 #[cfg(test)]
@@ -221,6 +297,29 @@ mod tests {
     }
     fn parse(value: serde_json::Value) -> Result<Catalog, String> {
         Catalog::parse(&serde_json::to_vec(&value).unwrap())
+    }
+
+    #[test]
+    fn stable_release_pairs_version_with_matching_android_asset() {
+        let mut entry = parse(fixture()).unwrap().plugins.remove(0);
+        let repo = "example/hello";
+        let url = "https://github.com/example/hello/releases/download/v1.2.3/example.hello-android-x86_64.apk";
+        let mut release = GithubRelease {
+            tag_name: "v1.2.3".into(),
+            draft: false,
+            prerelease: true,
+            assets: vec![GithubAsset {
+                name: "example.hello-android-x86_64.apk".into(),
+                browser_download_url: url.into(),
+            }],
+        };
+        assert!(apply_release(&mut entry, repo, "android-x86_64", &release).is_none());
+        release.prerelease = false;
+        apply_release(&mut entry, repo, "android-aarch64", &release).unwrap();
+        assert!(entry.android_apk_url.is_none());
+        apply_release(&mut entry, repo, "android-x86_64", &release).unwrap();
+        assert_eq!(entry.version.as_deref(), Some("1.2.3"));
+        assert_eq!(entry.android_apk_url.as_deref(), Some(url));
     }
 
     #[test]

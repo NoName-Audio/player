@@ -17,8 +17,14 @@ let disposed = false;
 const entries = computed(() => filterCatalog(listing.value?.catalog.plugins || [], query.value));
 const installed = (id: string) => host.plugins.value.find(p => p.manifest.id === id);
 const update = (entry: CatalogEntry) => isPluginUpdate(installed(entry.id)?.manifest.version, entry.version);
-const supported = (entry: CatalogEntry) => !!listing.value && entry.platforms.includes(listing.value.platform) && (!entry.installUrls || Boolean(entry.installUrls[listing.value.nativeTarget]));
-const tags = (entry: CatalogEntry) => [...new Set([...entry.platforms, ...entry.tags])];
+const supported = (entry: CatalogEntry) => {
+  const current = listing.value;
+  if (!current || !entry.platforms.includes(current.platform)) return false;
+  if (current.platform === 'android' && (entry.androidApkUrl || entry.tags.includes('github-latest'))) return Boolean(entry.androidApkUrl);
+  if (entry.tags.includes('github-latest')) return Boolean(entry.installUrls?.[current.nativeTarget]);
+  return !entry.installUrls || Boolean(entry.installUrls[current.nativeTarget]);
+};
+const tags = (entry: CatalogEntry) => [...new Set([...entry.platforms, ...entry.tags.filter(tag => tag !== 'github-latest')])];
 
 async function load() {
   if (loading.value) return;
