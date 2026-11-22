@@ -67,6 +67,6 @@ esac
   --enable-static --disable-shared --enable-pic --disable-x86asm \
   --disable-programs --disable-doc --disable-avdevice --disable-avfilter \
   --disable-encoders --disable-muxers --disable-network --disable-protocols \
-  --enable-protocol=file
+  --enable-protocol=file --enable-muxer=webm,mp4
 make -j "${JOBS:-4}"
 make install

@@ -66,7 +66,7 @@ pub(crate) fn hash(data: &[u8]) -> String {
     blake3::hash(data).to_hex().to_string()
 }
 
-fn is_hash(value: &str) -> bool {
+pub(crate) fn is_hash(value: &str) -> bool {
     value.len() == 64
         && value
             .bytes()
@@ -125,6 +125,13 @@ pub(crate) fn store(data_dir: &Path, data: &[u8]) -> Option<String> {
             None
         }
     }
+}
+
+pub(crate) fn store_synced_cover(data_dir: &Path, hash: &str, jpeg: &[u8]) -> bool {
+    if !is_hash(hash) || !jpeg.starts_with(b"\xff\xd8\xff") {
+        return false;
+    }
+    is_stored(data_dir, hash) || write_sizes(data_dir, hash, jpeg).is_ok()
 }
 
 #[cfg_attr(

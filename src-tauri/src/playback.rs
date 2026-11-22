@@ -287,6 +287,8 @@ struct DecodeSource {
     resource: Option<crate::plugin_sources::ResourceIdentity>,
     path: PathBuf,
     follow_growing: bool,
+    #[serde(skip)]
+    has_video: bool,
     segment_start_secs: f64,
     segment_end_secs: Option<f64>,
     duration_secs: Option<f64>,
@@ -302,6 +304,7 @@ impl DecodeSource {
             resource: None,
             path,
             follow_growing: false,
+            has_video: false,
             segment_start_secs: 0.0,
             segment_end_secs: None,
             duration_secs: None,
@@ -328,6 +331,7 @@ impl DecodeSource {
             resource: None,
             path,
             follow_growing: false,
+            has_video: false,
             segment_start_secs: start_secs.max(0.0),
             segment_end_secs: end_secs,
             duration_secs,
@@ -486,7 +490,8 @@ impl PlaybackState {
         self.play_source(source)
     }
 
-    fn play_source(&self, source: DecodeSource) -> Result<(), String> {
+    fn play_source(&self, mut source: DecodeSource) -> Result<(), String> {
+        source.has_video = !source.is_segment && !source.follow_growing && crate::video::has_video(&source.path);
         // Signal previous threads to stop
         self.inner.stop.store(true, Ordering::SeqCst);
         self.inner.ring_cvar.notify_all();
@@ -679,7 +684,7 @@ impl PlaybackState {
         let id = id.parse::<u64>().ok()?;
         let source = self.inner.current_source.lock().ok()?;
         let source = source.as_ref()?;
-        if self.is_stopped() || source.is_segment || source.follow_growing || id != self.inner.source_id.load(Ordering::SeqCst) {
+        if self.is_stopped() || !source.has_video || id != self.inner.source_id.load(Ordering::SeqCst) {
             return None;
         }
         Some(source.path.clone())
@@ -1369,7 +1374,7 @@ pub fn playback_status(state: tauri::State<'_, PlaybackState>) -> PlaybackStatus
         } else {
             Some(id.clone())
         },
-        video_available: state.video_path(&id).is_some_and(|path| crate::video::supported(&path)),
+        video_available: state.video_path(&id).is_some(),
         playing: state.is_playing(),
         finished: state.is_finished(),
         position: state.position_secs(),

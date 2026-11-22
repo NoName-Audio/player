@@ -16,12 +16,31 @@ struct Decoder {
     eof: bool,
 }
 
+fn open_local_input(path: &Path) -> Result<ff::format::context::Input, ff::Error> {
+    ff::init()?;
+    let mut options = ff::Dictionary::new();
+    options.set("protocol_whitelist", "file");
+    ff::format::input_with_dictionary(path, options)
+}
+
+pub(crate) fn container_metadata(path: &Path) -> Option<(Option<String>, Option<String>, Option<String>, Option<f64>)> {
+    let input = open_local_input(path).ok()?;
+    let tags = input.metadata();
+    let tag = |key| tags.get(key).filter(|value| !value.trim().is_empty()).map(str::to_owned);
+    let duration = input.duration();
+    Some((tag("title"), tag("ARTIST"), tag("ALBUM"), (duration > 0).then_some(duration as f64 / 1_000_000.0)))
+}
+
+pub(super) fn has_video_stream(path: &Path) -> bool {
+    open_local_input(path).is_ok_and(|input| input.streams().any(|stream| {
+        stream.parameters().medium() == ff::media::Type::Video
+            && !stream.disposition().contains(ff::format::stream::Disposition::ATTACHED_PIC)
+    }))
+}
+
 impl Decoder {
     fn open(path: &Path) -> Result<Self, ff::Error> {
-        ff::init()?;
-        let mut options = ff::Dictionary::new();
-        options.set("protocol_whitelist", "file");
-        let input = ff::format::input_with_dictionary(&path, options)?;
+        let input = open_local_input(path)?;
         let stream = input
             .streams()
             .best(ff::media::Type::Video)
@@ -197,6 +216,13 @@ pub async fn native_video_frame(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn audio_only_webm_is_not_video() {
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+        assert!(!crate::video::has_video(&fixtures.join("audio-only.webm")));
+        assert!(crate::video::has_video(&fixtures.join("mp4-opus.mp4")));
+    }
 
     #[test]
     fn mp4_video_follows_audio_position_and_backward_seek() {

@@ -1068,6 +1068,70 @@ fn start_http_server(conn: Arc<Mutex<Connection>>, data_dir: PathBuf, app: AppHa
     }
 }
 
+#[derive(Serialize, Deserialize)]
+struct ManualCover {
+    track_hash: String,
+    cover_hash: String,
+    updated_at: i64,
+}
+
+pub(crate) fn manual_cover_timestamp() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+        .map_or(1, |elapsed| elapsed.as_millis() as i64)
+}
+
+fn manual_covers(conn: &Connection) -> rusqlite::Result<Vec<ManualCover>> {
+    let mut stmt = conn.prepare("SELECT file_hash, manual_cover_hash, MAX(manual_cover_updated_at) FROM tracks WHERE file_hash IS NOT NULL AND manual_cover_hash IS NOT NULL GROUP BY file_hash, manual_cover_hash")?;
+    let rows = stmt.query_map([], |row| Ok(ManualCover { track_hash: row.get(0)?, cover_hash: row.get(1)?, updated_at: row.get::<_, i64>(2)?.max(1) }))?;
+    rows.collect()
+}
+
+fn apply_manual_cover(conn: &Connection, cover: &ManualCover, stored_hash: &str) -> rusqlite::Result<usize> {
+    conn.execute("UPDATE tracks SET manual_cover_hash = ?1, cover_hash = ?1, cover_mime = 'image/jpeg', manual_cover_updated_at = ?2 WHERE file_hash = ?3 AND (manual_cover_hash IS NULL OR ?2 > MAX(1, manual_cover_updated_at))", params![stored_hash, cover.updated_at, cover.track_hash])
+}
+
+fn sync_manual_covers(conn: &Mutex<Connection>, data_dir: &Path, client: &reqwest::blocking::Client, base_urls: &[String]) {
+    let Ok(remote) = peer_get_json::<Vec<ManualCover>>(client, base_urls, "/manual-covers") else { return };
+    for cover in remote {
+        if !crate::covers::is_hash(&cover.cover_hash) || cover.updated_at < 1 { continue; }
+        let needed = conn.lock().unwrap().query_row(
+            "SELECT EXISTS (SELECT 1 FROM tracks WHERE file_hash = ?1 AND (manual_cover_hash IS NULL OR ?2 > MAX(1, manual_cover_updated_at)))",
+            params![cover.track_hash, cover.updated_at], |row| row.get::<_, bool>(0),
+        ).unwrap_or(false);
+        if !needed { continue; }
+        let path = format!("/manual-cover/{}", cover.cover_hash);
+        let Ok(bytes) = peer_get_limited(client, base_urls, &path, 4 * 1024 * 1024) else { continue };
+        if crate::covers::store_synced_cover(data_dir, &cover.cover_hash, &bytes) {
+            if let Err(error) = apply_manual_cover(&conn.lock().unwrap(), &cover, &cover.cover_hash) {
+                tracing::warn!(%error, "Could not apply synced video cover");
+            }
+        }
+    }
+}
+
+#[test]
+fn synced_manual_cover_preserves_newer_selection() {
+    let dir = std::env::temp_dir().join(format!("player-cover-sync-{}", std::process::id()));
+    let source = dir.join("source");
+    let receiver = dir.join("receiver");
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::new_rgb8(16, 16).write_to(&mut png, image::ImageFormat::Png).unwrap();
+    let chosen = crate::covers::store(&source, png.get_ref()).unwrap();
+    let wire = crate::covers::read_largest(&source, &chosen).unwrap();
+    assert!(crate::covers::store_synced_cover(&receiver, &chosen, &wire));
+    assert!(crate::covers::is_stored(&receiver, &chosen));
+    std::fs::remove_dir_all(dir).unwrap();
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch("CREATE TABLE tracks (file_hash TEXT, manual_cover_hash TEXT, cover_hash TEXT, cover_mime TEXT, manual_cover_updated_at INTEGER); INSERT INTO tracks VALUES ('video', NULL, 'automatic', NULL, 0);").unwrap();
+    let mut cover = ManualCover { track_hash: "video".into(), cover_hash: chosen.clone(), updated_at: 20 };
+    assert_eq!(apply_manual_cover(&conn, &cover, &chosen).unwrap(), 1);
+    assert_eq!(manual_covers(&conn).unwrap()[0].cover_hash, chosen);
+    cover.updated_at = 10;
+    assert_eq!(apply_manual_cover(&conn, &cover, "older-frame").unwrap(), 0);
+    let actual: String = conn.query_row("SELECT cover_hash FROM tracks", [], |row| row.get(0)).unwrap();
+    assert_eq!(actual, chosen);
+}
+
 fn handle_request(
     request: tiny_http::Request,
     conn: Arc<Mutex<Connection>>,
@@ -1121,6 +1185,19 @@ fn handle_request(
     } else if let Some(hash) = url.strip_prefix("/cue/") {
         let hash = hash.to_string();
         serve_cue_file(request, &hash, &conn, &data_dir);
+    } else if url == "/manual-covers" {
+        match manual_covers(&conn.lock().unwrap()) {
+            Ok(covers) => respond_json(request, &covers),
+            Err(_) => respond_status(request, 500),
+        }
+    } else if let Some(hash) = url.strip_prefix("/manual-cover/") {
+        let referenced = crate::covers::is_hash(hash) && conn.lock().unwrap().query_row(
+            "SELECT EXISTS (SELECT 1 FROM tracks WHERE manual_cover_hash = ?1)", params![hash], |row| row.get::<_, bool>(0),
+        ).unwrap_or(false);
+        match referenced.then(|| crate::covers::read_largest(&data_dir, hash)).flatten() {
+            Some(bytes) => { let _ = request.respond(tiny_http::Response::from_data(bytes)); }
+            None => respond_status(request, 404),
+        }
     } else if let Some(hash) = url.strip_prefix("/file/") {
         let hash = hash.to_string();
         serve_file(request, &hash, &conn, &data_dir);
@@ -1651,12 +1728,21 @@ fn peer_base_urls(peer_host: &str, peer_addresses: &[String], port: u16) -> Vec<
 
 /// GET `path` from the first reachable peer URL. Returns the response body on 2xx.
 fn peer_get(client: &reqwest::blocking::Client, base_urls: &[String], path: &str) -> Result<Vec<u8>, String> {
+    peer_get_limited(client, base_urls, path, u64::MAX - 1)
+}
+
+fn peer_get_limited(client: &reqwest::blocking::Client, base_urls: &[String], path: &str, limit: u64) -> Result<Vec<u8>, String> {
     let mut last_err = String::from("no reachable peer address");
     for base in base_urls {
         let url = format!("{}{}", base, path);
         match client.get(&url).send() {
             Ok(resp) if resp.status().is_success() => {
-                return resp.bytes().map(|b| b.to_vec()).map_err(|e| e.to_string());
+                let mut bytes = Vec::new();
+                resp.take(limit + 1).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+                if bytes.len() as u64 > limit {
+                    return Err("Peer response exceeds size limit".into());
+                }
+                return Ok(bytes);
             }
             Ok(resp) => {
                 last_err = format!("HTTP {}", resp.status());
@@ -2704,6 +2790,8 @@ fn do_sync(peer_host: String, peer_name: String, peer_addresses: Vec<String>, pe
             }
         }
     }
+    sync_manual_covers(&conn, &data_dir, &client, &base_urls);
+    let _ = app.emit("library-changed", ());
 
     emit(
         &app,

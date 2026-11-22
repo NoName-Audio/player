@@ -2454,7 +2454,8 @@ watch(showDetail, () => {
 });
 const playbackVideoTarget = computed(() => (showDetail.value ? detailVideoTarget.value : null) ?? footerVideoTarget.value);
 const nativeVideoAvailable = ref(false);
-const canShowPlaybackVideo = computed(() => !remoteOutputPeer.value && !!nativePlaybackSourceId.value && nativeVideoAvailable.value);
+const unavailableVideoSource = ref<string | null>(null);
+const canShowPlaybackVideo = computed(() => !remoteOutputPeer.value && !!nativePlaybackSourceId.value && nativeVideoAvailable.value && unavailableVideoSource.value !== nativePlaybackSourceId.value);
 const playbackRestoring = ref(true);
 let playbackRestorePromise: Promise<void> | null = null;
 let playbackRestoreDisposed = false;
@@ -5500,7 +5501,7 @@ onUnmounted(() => {
       <template #plugin-actions><PluginPanel v-for="widget in pluginWidgets.filter(w => w.slot === 'player.actions')" :key="widget.key" :plugin-id="widget.pluginId" :view-id="widget.id" /></template>
     </PlayerBar>
     <Teleport v-if="canShowPlaybackVideo && nativePlaybackSourceId && playbackVideoTarget" :to="playbackVideoTarget">
-      <PlaybackVideo ref="playbackVideo" :key="nativePlaybackSourceId" :source-id="nativePlaybackSourceId" />
+      <PlaybackVideo ref="playbackVideo" :key="nativePlaybackSourceId" :source-id="nativePlaybackSourceId" @audio-only="unavailableVideoSource = $event" />
     </Teleport>
   </div>
 

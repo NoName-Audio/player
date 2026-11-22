@@ -1044,6 +1044,7 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN cover_hash TEXT");
     let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN identified_cover_hash TEXT");
     let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN manual_cover_hash TEXT");
+    let _ = conn.execute_batch("ALTER TABLE tracks ADD COLUMN manual_cover_updated_at INTEGER NOT NULL DEFAULT 0");
     conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_tracks_cover_hash ON tracks(cover_hash)")?;
     // Recreated on every start so changes to its definition take effect.
     conn.execute_batch(&format!(
@@ -2384,9 +2385,17 @@ fn hash_virtual_track(parts: &[&str]) -> String {
     )
 )]
 fn read_audio_meta(path: &Path, sidecar_cover: Option<&SidecarCoverCandidate>) -> Meta {
-    let meta = read_tagged_audio_meta(path, sidecar_cover);
+    let mut meta = read_tagged_audio_meta(path, sidecar_cover);
     #[cfg(feature = "native-video")]
     if crate::video::supported(path) {
+        if path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("webm")) {
+            if let Some((title, artist, album, duration)) = crate::video::native::container_metadata(path) {
+                meta.title = title.or(meta.title);
+                meta.artist = artist.or(meta.artist);
+                meta.album = album.or(meta.album);
+                meta.duration_secs = meta.duration_secs.or(duration);
+            }
+        }
         if let Some(cover) = crate::video::native::cover(path) {
             return Meta {
                 cover_data: Some(cover),
@@ -3355,8 +3364,8 @@ pub async fn set_video_frame_cover(
     let updated = {
         let db = conn.lock().unwrap();
         db.execute(
-            "UPDATE tracks SET manual_cover_hash = ?1, cover_hash = ?1, cover_mime = 'image/png' WHERE id = ?2 AND path = ?3",
-            params![hash, id, track.path],
+            "UPDATE tracks SET manual_cover_hash = ?1, cover_hash = ?1, cover_mime = 'image/png', manual_cover_updated_at = ?4 WHERE id = ?2 AND path = ?3",
+            params![hash, id, track.path, crate::sync::manual_cover_timestamp()],
         ).map_err(|err| err.to_string())?;
         get_track_by_id(&db, id).map_err(|err| err.to_string())?
     };

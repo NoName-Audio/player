@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue';
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 
 const props = defineProps<{ sourceId: string }>();
+const emit = defineEmits<{ 'audio-only': [sourceId: string] }>();
 const url = computed(() => convertFileSrc(props.sourceId, 'player-video'));
 const video = ref<HTMLVideoElement>();
 const failed = ref(false);
@@ -128,7 +129,7 @@ watch(video, (current, _, cleanup) => {
 <template>
   <canvas v-if="!failed && native" ref="canvas" />
   <video v-else-if="!failed && legacy" ref="video" :src="url" crossorigin="anonymous" muted playsinline preload="auto"
-    @loadedmetadata="failed = !($event.target as HTMLVideoElement).videoWidth"
+    @loadedmetadata="!($event.target as HTMLVideoElement).videoWidth && emit('audio-only', sourceId)"
     @error="failed = true" />
   <p v-else-if="failed" role="status">Video unavailable. Audio playback is unaffected.</p>
 </template>

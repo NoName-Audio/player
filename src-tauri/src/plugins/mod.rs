@@ -1,6 +1,7 @@
 //! Player's runtime package registry and capability gateway.
 pub mod android;
 mod catalog;
+mod import_media;
 pub mod model;
 pub mod native;
 #[cfg(target_os = "android")]
@@ -61,6 +62,7 @@ pub fn initialize(app: &tauri::AppHandle) -> Result<(), String> {
         .app_data_dir()
         .map_err(|e| e.to_string())?
         .join("plugin-system");
+    import_media::clean_staging(&root.join("staging/player.youtube"));
     let state = PluginState::new(root)?;
     app.manage(native::NativeRuntime::default());
     app.manage(state);
@@ -431,11 +433,14 @@ pub async fn plugin_call(
                 return Err("Transfer has not completed".into());
             }
             let library = app.state::<crate::library::LibraryState>();
+            let youtube = method == "library.import" && plugin_id == "player.youtube";
             // Work from a copy: a decoder may still own the original staging file.
             let copy_dir = state.root.join("imports").join(&plugin_id);
             std::fs::create_dir_all(&copy_dir).map_err(|e| e.to_string())?;
             let copy = copy_dir.join(source.path.file_name().ok_or("Source has no filename")?);
-            std::fs::copy(&source.path, &copy).map_err(|e| e.to_string())?;
+            if !youtube {
+                std::fs::copy(&source.path, &copy).map_err(|e| e.to_string())?;
+            }
             if method == "library.replace" {
                 let track = crate::library::replace_track_with_file(
                     field(&args, "trackId")?,
@@ -450,6 +455,9 @@ pub async fn plugin_call(
                 );
                 value(track)
             } else {
+                let target = if youtube {
+                    import_media::save_youtube(library.data_dir(), &source.path, &source.resource)?
+                } else {
                 let (artist, album) = crate::import_paths::extract_audio_metadata(&copy);
                 let target_dir = crate::import_paths::build_metadata_based_path(
                     library.data_dir(),
@@ -473,6 +481,8 @@ pub async fn plugin_call(
                 if !target.exists() {
                     std::fs::copy(&copy, &target).map_err(|e| e.to_string())?;
                 }
+                target
+                };
                 let relative = target
                     .strip_prefix(library.data_dir())
                     .map_err(|e| e.to_string())?
@@ -503,7 +513,7 @@ pub async fn plugin_call(
                         }
                     }
                 }
-                let _ = std::fs::remove_file(copy);
+                if !youtube { let _ = std::fs::remove_file(copy); }
                 if let Some(t) = &track {
                     app.state::<crate::playback::PlaybackState>().adopt_track(
                         &plugin_id,

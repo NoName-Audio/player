@@ -30,6 +30,14 @@ pub(crate) fn supported(path: &std::path::Path) -> bool {
     })
 }
 
+pub(crate) fn has_video(path: &std::path::Path) -> bool {
+    if !supported(path) { return false; }
+    #[cfg(feature = "native-video")]
+    { native::has_video_stream(path) }
+    #[cfg(not(feature = "native-video"))]
+    { true }
+}
+
 fn serve(path: &std::path::Path, request: &Request<Vec<u8>>) -> Response<Vec<u8>> {
     let mime = match path.extension().and_then(|ext| ext.to_str()).map(str::to_ascii_lowercase).as_deref() {
         Some("mp4" | "m4v") => "video/mp4",
