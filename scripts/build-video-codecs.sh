@@ -23,6 +23,9 @@ case "$target" in
       --extra-ldflags="-arch $apple_arch -mmacosx-version-min=11.0")
     ;;
   x86_64-pc-windows-msvc)
+    # Native MinGW make and MSVC cannot resolve Git Bash's /tmp paths.
+    source_dir=$(cygpath -am "$source_dir")
+    prefix=$(cygpath -am "$prefix")
     flags+=(--toolchain=msvc --arch=x86_64)
     ;;
   x86_64-unknown-linux-gnu|aarch64-unknown-linux-gnu)
@@ -54,7 +57,7 @@ case "$target" in
 esac
 
 "$source_dir/configure" --prefix="$prefix" "${flags[@]}" \
-  --disable-gpl --disable-nonfree --disable-autodetect \
+  --disable-gpl --disable-nonfree --disable-autodetect --disable-vulkan \
   --enable-static --disable-shared --enable-pic --disable-x86asm \
   --disable-programs --disable-doc --disable-avdevice --disable-avfilter \
   --disable-encoders --disable-muxers --disable-network --disable-protocols \

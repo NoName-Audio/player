@@ -28,3 +28,14 @@ for target in "$@"; do
   cp "$prefix/$target/lib/"*.a "$prefix/$libdir/" 2>/dev/null || cp "$prefix/$target/lib/"*.lib "$prefix/$libdir/"
   cp -R "$prefix/$target/include" "$prefix/"
 done
+
+# These software-only builds do not provide Vulkan. On 32-bit Android,
+# ffmpeg-sys-next 9.1.1's optional Vulkan bindings assume a 64-bit ABI.
+for target in "$@"; do
+  case "$target" in
+    armv7-linux-androideabi|i686-linux-android)
+      rm -f "$prefix/include/libavutil/hwcontext_vulkan.h"
+      break
+      ;;
+  esac
+done
