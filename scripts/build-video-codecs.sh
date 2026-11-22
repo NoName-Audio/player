@@ -23,8 +23,10 @@ case "$target" in
       --extra-ldflags="-arch $apple_arch -mmacosx-version-min=11.0")
     ;;
   x86_64-pc-windows-msvc)
-    # Native MinGW make and MSVC cannot resolve Git Bash's /tmp paths.
-    source_dir=$(cygpath -am "$source_dir")
+    # FFmpeg configure recomputes the source path with pwd for out-of-tree
+    # builds. Build in a disposable source tree so native make sees relative paths.
+    cp -R "$source_dir/." .
+    source_dir=.
     prefix=$(cygpath -am "$prefix")
     flags+=(--toolchain=msvc --arch=x86_64)
     ;;
