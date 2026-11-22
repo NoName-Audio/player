@@ -347,9 +347,14 @@ impl DecodeSource {
             crate::library::TrackSource::GrowingFile {
                 cache_path,
                 resource,
-            } => Self {
-                resource: Some(resource),
-                ..Self::growing_file(cache_path)
+            } => {
+                let completed = crate::plugin_sources::transfer_state(&cache_path)
+                    == Some(crate::plugin_sources::TransferState::Completed);
+                Self {
+                    resource: Some(resource),
+                    follow_growing: !completed,
+                    ..Self::file(cache_path)
+                }
             },
         }
     }

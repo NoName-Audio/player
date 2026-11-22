@@ -256,7 +256,7 @@ internal class InstalledApkRuntime(private val context: Context, private val hos
         }
         val host: (String, String) -> String = { method, arguments ->
             if (args.method == "canShare") "{\"ok\":false,\"error\":\"Host calls are unavailable during canShare\"}"
-            else if (args.method == "share" && method == "share.downloadOptions") downloadOptions()
+            else if ((args.method == "share" || args.method == "action") && method == "share.downloadOptions") downloadOptions()
             else hostCall(args.hostToken, method, arguments)
         }
         val response = module.call.invoke(module.instance, args.method, args.argsJson, host) as? String
