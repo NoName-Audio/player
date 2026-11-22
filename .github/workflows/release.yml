@@ -108,13 +108,18 @@ jobs:
 
       - name: Install Make for Windows codecs
         if: matrix.name == 'windows'
-        run: choco install make --yes --no-progress
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MSYS
+          path-type: inherit
+          install: make
 
       - name: Initialize MSVC codec toolchain
         if: matrix.name == 'windows'
         uses: ilammy/msvc-dev-cmd@v1
 
       - name: Build native video codecs
+        if: matrix.name != 'windows'
         shell: bash
         run: |
           set -euo pipefail
@@ -122,10 +127,18 @@ jobs:
           case '${{ matrix.name }}' in
             macos) targets=(aarch64-apple-darwin x86_64-apple-darwin) ;;
             linux) targets=(x86_64-unknown-linux-gnu) ;;
-            windows) targets=(x86_64-pc-windows-msvc) ;;
           esac
           bash scripts/prepare-video-codecs.sh "$prefix" "${targets[@]}"
           echo "FFMPEG_DIR=$prefix" >> "$GITHUB_ENV"
+
+      - name: Build native video codecs (Windows)
+        if: matrix.name == 'windows'
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          prefix="$(cygpath -u "$RUNNER_TEMP")/player-codecs"
+          bash scripts/prepare-video-codecs.sh "$prefix" x86_64-pc-windows-msvc
+          echo "FFMPEG_DIR=$(cygpath -am "$prefix")" >> "$(cygpath -u "$GITHUB_ENV")"
 
       - name: Build Tauri desktop bundles
         if: matrix.name != 'macos'
