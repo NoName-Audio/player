@@ -52,7 +52,7 @@ export interface PlaybackSnapshot {
   playing: boolean; resource?: ResourceIdentity | null;
 }
 export interface PluginSource { sourceToken: string; resource: ResourceIdentity }
-export interface ResultAction { id: string; label: string; disabled?: boolean }
+export interface ResultAction { id: string; label: string; disabled?: boolean; downloadOptions?: boolean }
 export interface SearchItem {
   id: string; title: string; subtitle?: string; coverHash?: string | null; coverLoading?: boolean;
   status?: string; actions?: ResultAction[];

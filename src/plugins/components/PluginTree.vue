@@ -1,4 +1,7 @@
 <script setup lang="ts">
+import { ref, onMounted, onUnmounted } from 'vue';
+import ResponsivePopup from '../../components/ResponsivePopup.vue';
+import AppIcon from '../../components/AppIcon.vue';
 import type { PluginManifest, UiNode } from '../types';
 import CoverImage from '../../components/CoverImage.vue';
 import { coverUrl } from '../../utils/covers';
@@ -7,6 +10,28 @@ import PluginStatus from './PluginStatus.vue';
 defineProps<{ node: UiNode; manifest?: PluginManifest; fields: Record<string, string | boolean>; busy: boolean; pendingButton?: string; path?: string }>();
 const emit = defineEmits<{ action: [action: string, payload?: Record<string, unknown>, button?: string] }>();
 const resultButton = (path: string | undefined, resourceId: string, action: string) => JSON.stringify([path || '', resourceId, action]);
+const openDownload = ref<string>();
+const formats = [
+  { title: 'Audio', label: 'WebM/Opus', video: false },
+  { title: 'Video', label: 'MP4', video: true },
+];
+const previewChoices = new Map<string, { video: boolean; saveData: boolean }>();
+function chooseDownload(action: string, resourceId: string, button: string, video: boolean, saveData: boolean) {
+  const choice = { video, saveData };
+  if (action === 'play') previewChoices.set(resourceId, choice);
+  closeDownload();
+  emit('action', action, { resourceId, ...choice }, button);
+}
+function resultAction(action: { id: string; downloadOptions?: boolean }, resourceId: string, button: string) {
+  const choice = action.downloadOptions && action.id === 'save'
+    ? previewChoices.get(resourceId) ?? { video: false, saveData: false }
+    : undefined;
+  closeDownload();
+  emit('action', action.id, { resourceId, ...choice }, button);
+}
+function closeDownload() { openDownload.value = undefined; }
+onMounted(() => window.addEventListener('click', closeDownload));
+onUnmounted(() => window.removeEventListener('click', closeDownload));
 </script>
 <template>
   <div v-if="node.type === 'group'" class="plugin-group">
@@ -24,11 +49,31 @@ const resultButton = (path: string | undefined, resourceId: string, action: stri
     <div v-for="item in node.items || []" :key="item.id" class="plugin-result">
       <CoverImage class="track-cover-sm" :src="coverUrl(item.coverHash, 'small')" :loading="item.coverLoading" />
       <div class="plugin-result-copy"><strong>{{ item.title }}</strong><span>{{ item.subtitle }}</span><span v-if="item.status">{{ item.status }}</span></div>
-      <div class="plugin-result-actions"><button v-for="action in item.actions || []" :key="action.id" class="control-button" :disabled="busy || action.disabled" :aria-busy="busy && pendingButton === resultButton(path, item.id, action.id)" @click="emit('action', action.id, { resourceId: item.id }, resultButton(path, item.id, action.id))">{{ action.label }}</button></div>
+      <div class="plugin-result-actions">
+        <template v-for="action in item.actions || []" :key="action.id">
+          <ResponsivePopup v-if="action.downloadOptions && action.id !== 'save'" anchored :open="openDownload === resultButton(path, item.id, action.id)" @close="closeDownload">
+            <template #trigger>
+              <button class="control-button" :disabled="busy || action.disabled" :aria-expanded="openDownload === resultButton(path, item.id, action.id)" @click.stop="openDownload = openDownload === resultButton(path, item.id, action.id) ? undefined : resultButton(path, item.id, action.id)">
+                {{ action.label }} <AppIcon name="dropdown" :size="12" />
+              </button>
+            </template>
+            <div v-for="format in formats" :key="format.title" class="download-menu-group" role="group" :aria-label="format.title">
+              <div class="download-menu-heading">{{ format.title }}</div>
+              <button class="download-menu-item" :disabled="busy || action.disabled" @click="chooseDownload(action.id, item.id, resultButton(path, item.id, action.id), format.video, false)">{{ format.label }}</button>
+              <button class="download-menu-item" :disabled="busy || action.disabled" @click="chooseDownload(action.id, item.id, resultButton(path, item.id, action.id), format.video, true)">Save data</button>
+            </div>
+          </ResponsivePopup>
+          <button v-else class="control-button" :disabled="busy || action.disabled" :aria-busy="busy && pendingButton === resultButton(path, item.id, action.id)" @click="resultAction(action, item.id, resultButton(path, item.id, action.id))">{{ action.label }}</button>
+        </template>
+      </div>
     </div>
   </div>
 </template>
 <style scoped>
+.download-menu-group + .download-menu-group { border-top: 1px solid var(--color-border); }
+.download-menu-heading { padding: var(--space-2) var(--space-4) 0; color: var(--color-text-muted); font-size: 12px; }
+.download-menu-item { display: block; width: 100%; min-height: 40px; text-align: left; background: none; border: none; color: var(--color-text); font-size: var(--fs-button); padding: var(--space-2) var(--space-4); cursor: pointer; }
+.download-menu-item:hover, .download-menu-item:focus-visible { background: var(--color-surface-hover); }
 .plugin-group { display: grid; gap: var(--space-4); }.plugin-group h3 { margin: 0; }.plugin-group p { color: var(--color-text-muted); margin: 0; line-height: 1.5; }
 .plugin-field { min-width: 0; }
 .plugin-toggle { display: flex; align-items: center; justify-content: space-between; }.plugin-error { color: var(--color-danger-text) !important; }

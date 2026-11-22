@@ -31,7 +31,7 @@ async function search(cursor: string | null = null, direction: 'new' | 'next' | 
   } catch (e) { if (seq === sequence && !disposed) { error.value = String(e); providerPending.value = false; } }
   finally { if (seq === sequence) loading.value = false; }
 }
-async function action(action: string, payload = {}, button?: string) {
+async function action(action: string, payload: Record<string, unknown> = {}, button?: string) {
   if (loading.value || actionBusy.value) return;
   actionBusy.value = true; pendingButton.value = button;
   try { error.value = ''; await host.call(props.contribution.pluginId, 'action', { action, payload }); }

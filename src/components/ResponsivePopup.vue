@@ -13,6 +13,7 @@ const props = defineProps<{
   anchorX?: number | null;
   anchorY?: number | null;
   centered?: boolean;
+  anchored?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -28,7 +29,7 @@ const desktopStyle = ref<Record<string, string>>({});
 function updateDesktopPosition() {
   const wrapper = wrapperRef.value;
   const panel = desktopPanelRef.value;
-  if (!props.open || !wrapper || !panel || window.innerWidth <= 900) {
+  if (!props.open || !wrapper || !panel || (!props.anchored && window.innerWidth <= 900)) {
     desktopStyle.value = {};
     return;
   }
@@ -112,7 +113,7 @@ onUnmounted(() => {
         v-if="open"
         ref="desktopPanelRef"
         class="responsive-popup-desktop dropdown"
-        :class="panelClass"
+        :class="[panelClass, { 'responsive-popup-anchored': anchored }]"
         :style="desktopStyle"
         @click.stop
       >
@@ -134,7 +135,7 @@ onUnmounted(() => {
   <Teleport to="body">
     <Transition name="mobile-popup">
       <div
-        v-if="open"
+        v-if="open && !anchored"
         class="responsive-popup-mobile"
         @click.stop="emit('close')"
         @keydown.esc.stop="emit('close')"
@@ -255,7 +256,7 @@ onUnmounted(() => {
 }
 
 @media (max-width: 900px) {
-  .responsive-popup-desktop {
+  .responsive-popup-desktop:not(.responsive-popup-anchored) {
     display: none;
   }
 
