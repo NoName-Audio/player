@@ -51,6 +51,10 @@ case "$target" in
       x86_64-linux-android) arch=x86_64; triple=$target ;;
       *) exit 2 ;;
     esac
+    # i686 swscale inline assembly emits absolute relocations in shared builds.
+    if [[ $target == i686-linux-android ]]; then
+      flags+=(--disable-inline-asm)
+    fi
     flags+=(--target-os=android --arch="$arch" --enable-cross-compile
       --cc="$bin/${triple}24-clang" --ar="$bin/llvm-ar" --nm="$bin/llvm-nm"
       --ranlib="$bin/llvm-ranlib" --strip="$bin/llvm-strip")
