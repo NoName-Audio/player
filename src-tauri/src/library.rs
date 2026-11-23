@@ -255,6 +255,9 @@ impl LibraryState {
         init_schema(&conn)?;
         purge_internal_library_rows(&conn)?;
         prepare_physical_hash_repair(&conn)?;
+        if !in_memory {
+            seed_new_tracks_playlist(&conn)?;
+        }
         crate::waveform_cache::init(&conn)?;
         crate::loudness::init(&conn)?;
 
@@ -1134,6 +1137,35 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
         track_id INTEGER PRIMARY KEY REFERENCES tracks(id) ON DELETE CASCADE,
         state TEXT NOT NULL DEFAULT 'pending');")?;
     Ok(())
+}
+
+fn seed_new_tracks_playlist(conn: &Connection) -> rusqlite::Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    let pending = tx.execute(
+        "INSERT OR IGNORE INTO library_migrations(name) VALUES ('new-tracks-playlist-v1')",
+        [],
+    )?;
+    if pending != 0 {
+        tx.execute(
+            "INSERT INTO smart_playlists (id, name, rules_json)
+             SELECT 'builtin-new-tracks-v1', 'New Tracks', ?1
+             WHERE NOT EXISTS (SELECT 1 FROM smart_playlists
+                               WHERE id = 'builtin-new-tracks-v1' OR name = 'New Tracks' COLLATE NOCASE)",
+            [r#"[{"field":"sort","op":"sort_desc","value":"date_added"}]"#],
+        )?;
+    }
+    let pin_pending = tx.execute(
+        "INSERT OR IGNORE INTO library_migrations(name) VALUES ('pin-new-tracks-playlist-v1')",
+        [],
+    )?;
+    if pin_pending != 0 {
+        tx.execute(
+            "UPDATE smart_playlists SET pinned = 1, pinned_at = unixepoch()
+             WHERE id = 'builtin-new-tracks-v1' AND pinned = 0",
+            [],
+        )?;
+    }
+    tx.commit()
 }
 
 /// Queue legacy identities without opening media. The queue is also sync's

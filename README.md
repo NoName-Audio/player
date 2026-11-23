@@ -196,6 +196,7 @@ does not open a permission prompt from the background.
 
 - Responsive desktop/mobile layout.
 - Pinned playlist cards on Home use the first track with a cover in playlist order, including Flexible Playlists. The playlist type icon stays visible over the cover or on the default placeholder.
+- The first launch after installing or upgrading creates the **New Tracks** flexible playlist and pins it to Home. It sorts by date added, newest first. The playlist is not recreated if deleted or pinned again if unpinned.
 - Android media notification and lock-screen controls.
 - Now-playing view with a Three.js/WebGL album card.
 - Dark and light themes (or following the system) with a choice of accent color and header gradient.
