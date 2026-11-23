@@ -4396,7 +4396,9 @@ onUnmounted(() => {
                       <AppIcon name="play" :size="18" />
                     </button>
                   </div>
-                  <AppIcon v-if="!loaded" :name="item.kind === 'regular' ? 'playlist' : 'smart-playlist'" :size="30" class="pinned-cover-icon" />
+                  <span class="pinned-cover-icon" :class="{ 'pinned-cover-badge': loaded }" role="img" :aria-label="item.kind === 'regular' ? 'Playlist' : 'Flexible playlist'">
+                    <AppIcon :name="item.kind === 'regular' ? 'playlist' : 'smart-playlist'" :size="loaded ? 16 : 30" />
+                  </span>
                 </CoverImage>
                 <div class="card-title">{{ item.name }}</div>
                 <div class="card-artist">{{ item.subtitle }}</div>
@@ -6201,7 +6203,17 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: var(--spa
 .icon-btn:hover { color: var(--color-text); }
 .icon-btn.green { color: var(--color-accent); }
 .success-icon { color: var(--color-accent); }
-.pinned-cover-icon { color: color-mix(in srgb, var(--color-text) 88%, transparent); }
+.pinned-cover-icon { display: inline-flex; color: color-mix(in srgb, var(--color-text) 88%, transparent); }
+.pinned-cover-badge {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  padding: 5px;
+  border-radius: var(--radius-pill);
+  background: rgb(0 0 0 / 75%);
+  color: white;
+  pointer-events: none;
+}
 .icon-btn.green:hover { color: var(--color-accent-hover); }
 .icon-btn.dot::after {
   content: '';
