@@ -318,6 +318,7 @@ pub fn run() {
             audio::get_volume,
             audio::set_volume,
             about::about_info,
+            about::about_release_notes,
             about::about_check_updates,
             about::about_do_update,
             about::about_update_status,

@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { ref, watch } from 'vue';
+import { invoke } from '@tauri-apps/api/core';
 import { Marked } from 'marked';
 import appIconUrl from '/app-icon.svg';
 import contributorSnapshot from '../generated/contributors.json';
@@ -11,7 +12,61 @@ const contributors: Contributor[] = contributorSnapshot.contributors;
 const failedAvatars = ref(new Set<string>());
 const assetsBaseUrl = import.meta.env.BASE_URL;
 
-defineProps<{
+type ReleaseNote = { tag_name: string; body: string | null; published_at: string | null };
+type ChangelogEntry = ReleaseNote & { previewHtml: string; notesHtml: string };
+const releases = ref<ChangelogEntry[]>([]);
+const nextPage = ref<number | null>(1);
+const releaseLoading = ref(false);
+const releaseError = ref(false);
+const releaseSentinel = ref<HTMLElement>();
+const releaseMarkdown = new Marked({ gfm: true, breaks: true, renderer: {
+  html: () => '',
+  link({ tokens }) { return this.parser.parseInline(tokens); },
+  image: () => '',
+} });
+
+function formatRelease(release: ReleaseNote): ChangelogEntry {
+  const tokens = releaseMarkdown.lexer(release.body?.trim() ?? '');
+  const start = tokens.findIndex(token => token.type === 'heading' && /^highlights$/i.test(token.text.trim()));
+  if (start < 0) return { ...release, previewHtml: '', notesHtml: releaseMarkdown.parser(tokens) };
+  const boundary = tokens.findIndex((token, index) => index > start && (
+    token.type === 'heading' || (token.type === 'paragraph' && /^Full changelog:/i.test(token.text))
+  ));
+  const end = boundary < 0 ? tokens.length : boundary;
+  return {
+    ...release,
+    previewHtml: releaseMarkdown.parser(tokens.slice(start + 1, end)),
+    notesHtml: releaseMarkdown.parser([...tokens.slice(0, start), ...tokens.slice(end)]),
+  };
+}
+
+async function loadReleases() {
+  const page = nextPage.value;
+  if (page === null || releaseLoading.value) return;
+  releaseLoading.value = true;
+  releaseError.value = false;
+  try {
+    const result = await invoke<{ releases: ReleaseNote[]; next_page: number | null }>('about_release_notes', { page });
+    const seen = new Set(releases.value.map(release => release.tag_name));
+    releases.value.push(...result.releases.filter(release => !seen.has(release.tag_name)).map(formatRelease));
+    nextPage.value = result.next_page;
+  } catch {
+    releaseError.value = true;
+  } finally {
+    releaseLoading.value = false;
+  }
+}
+
+watch(releaseSentinel, (element, _, onCleanup) => {
+  if (!element || typeof IntersectionObserver === 'undefined') return;
+  const observer = new IntersectionObserver(([entry]) => {
+    if (props.autoCheck && entry?.isIntersecting) void loadReleases();
+  }, { rootMargin: '200px 0px' });
+  observer.observe(element);
+  onCleanup(() => observer.disconnect());
+}, { flush: 'post' });
+
+const props = defineProps<{
   info: AboutInfo | null;
   loading: boolean;
   error: string;
@@ -47,7 +102,7 @@ function openNoteLink(event: MouseEvent) {
         </div>
         <button v-if="info?.release_repo" class="control-button text-link repository-link" @click="emit('openRepository')">GitHub repository <AppIcon name="external-link" /></button>
       </div>
-      <div class="info-row"><span>Version</span><strong>{{ info?.current_version || 'Unavailable' }}</strong></div>
+      <div class="info-row"><span>Version</span><strong>{{ info?.display_version || 'Unavailable' }}</strong></div>
       <div class="info-row"><span>Platform</span><span>{{ info?.platform || 'Unavailable' }}</span></div>
       <div class="update-card">
         <div><h3>{{ status?.has_update ? 'An update is available' : 'App updates' }}</h3>
@@ -61,12 +116,12 @@ function openNoteLink(event: MouseEvent) {
         </button>
         <button class="control-button" v-else :disabled="checking" :aria-busy="checking" @click="emit('check')">{{ checking ? 'Checking...' : 'Check for updates' }}</button>
         <button v-if="updating && androidUpdate && androidUpdate.status !== 'installing'" class="control-button" @click="emit('cancelUpdate')">Cancel update</button>
+        <label class="check-option"><input type="checkbox" :checked="autoCheck" @change="emit('update:autoCheck', ($event.target as HTMLInputElement).checked)" /> Check for updates automatically</label>
       </div>
       <p v-if="androidUpdate?.status === 'downloading'" role="status">Downloaded {{ androidUpdate.downloaded.toLocaleString() }}{{ androidUpdate.total > 0 ? ` of ${androidUpdate.total.toLocaleString()}` : '' }} bytes.</p>
       <p v-else-if="androidUpdate?.status === 'verifying'" role="status">Verifying the downloaded APK before installation.</p>
       <p v-else-if="androidUpdate?.status === 'permission'" role="status">Allow Player to install unknown apps in Android settings, then return here. Installation resumes automatically.</p>
       <p v-else-if="androidUpdate?.status === 'installing'" role="status">Continue in Android's package installer. Opening the installer does not confirm that the update was installed.</p>
-      <label class="check-option"><input type="checkbox" :checked="autoCheck" @change="emit('update:autoCheck', ($event.target as HTMLInputElement).checked)" /> Check for updates automatically</label>
       <p v-if="updateError" class="error" role="alert">{{ updateError }}</p>
       <p v-if="updateDone" role="status">{{ updateDone }}</p>
       <div v-if="status?.release_url" class="links">
@@ -92,11 +147,30 @@ function openNoteLink(event: MouseEvent) {
         <h3>Release notes</h3>
         <div class="release-notes-content" @click="openNoteLink" v-html="markdown.parse(status.release_notes)" />
       </div>
-      <div v-else class="changelog">
-        <h3>Changelog</h3>
-        <ul v-if="info?.changelog.length"><li v-for="entry in info.changelog" :key="entry.short_hash">{{ entry.subject }}</li></ul>
-        <p v-else>No changelog is available for this build.</p>
-      </div>
+      <section class="changelog" aria-labelledby="changelog-heading">
+        <h3 id="changelog-heading">Changelog</h3>
+        <article v-for="release in releases" :key="release.tag_name" class="changelog-release release-notes">
+          <h4>{{ release.tag_name }}</h4>
+          <time v-if="release.published_at" :datetime="release.published_at">{{ new Date(release.published_at).toLocaleDateString() }}</time>
+          <div v-if="release.previewHtml" class="release-notes-content" v-html="release.previewHtml" />
+          <details v-if="release.notesHtml">
+            <summary class="control-button changelog-toggle">{{ release.previewHtml ? 'More changes' : 'Release notes' }}</summary>
+            <div class="release-notes-content" v-html="release.notesHtml" />
+          </details>
+          <p v-else-if="!release.previewHtml">No release notes.</p>
+        </article>
+        <p v-if="releaseLoading" role="status">Loading releases…</p>
+        <p v-else-if="nextPage === null && !releases.length">No published releases found.</p>
+        <template v-else-if="nextPage !== null">
+          <p v-if="releaseError" role="alert">Could not load release history.</p>
+          <button type="button" class="control-button" @click="loadReleases">{{ releaseError ? 'Try again' : releases.length ? 'Load more releases' : 'Load releases' }}</button>
+          <div v-if="autoCheck && !releaseError" :key="nextPage" ref="releaseSentinel" aria-hidden="true" />
+        </template>
+      </section>
+      <details v-if="info?.changelog.length" class="changelog">
+        <summary class="control-button changelog-toggle">Recent build commits</summary>
+        <ul><li v-for="entry in info.changelog" :key="entry.short_hash">{{ entry.subject }}</li></ul>
+      </details>
       <footer class="about-footer">
         <button type="button" class="control-button text-link" @click="emit('openExternal', 'https://github.com/' + (info?.release_repo || 'NoName-Audio/player') + '/blob/HEAD/public/licenses/third-party.txt')">Licenses <AppIcon name="external-link" :size="14" /></button>
       </footer>
@@ -124,6 +198,22 @@ strong { color: var(--color-text); }
   align-items: center;
   gap: var(--space-4);
 }
+.update-card > .check-option { flex-basis: 100%; }
+.changelog-toggle { display: inline-flex; align-items: center; gap: var(--control-gap); list-style: none; }
+.changelog-toggle::-webkit-details-marker { display: none; }
+.changelog-toggle:is(:hover, :active) {
+  background: color-mix(in srgb, var(--color-text) 6%, transparent);
+  border-color: var(--color-text-faint);
+}
+.changelog-toggle::after {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border: solid currentColor;
+  border-width: 0 1.5px 1.5px 0;
+  transform: translateY(-2px) rotate(45deg);
+}
+details[open] > .changelog-toggle::after { transform: translateY(2px) rotate(225deg); }
 .contributor-link {
   border-radius: 8px;
 }
@@ -143,6 +233,9 @@ strong { color: var(--color-text); }
 .contributor-info strong { font-size: 14px; }
 .contributor-info > span { font-size: 12px; }
 .contributor-arrow { margin-left: auto; }
+.changelog-release { border-top: 1px solid var(--color-border); padding: var(--space-4) 0; }
+.changelog-release h4 { margin: 0; }
+.changelog-release time { color: var(--color-text-muted); }
 .changelog ul { padding-left: var(--space-6); }
 .changelog li { padding: var(--space-2) 0; line-height: 1.5; overflow-wrap: anywhere; }
 .release-notes { line-height: 1.7; overflow-wrap: anywhere; }

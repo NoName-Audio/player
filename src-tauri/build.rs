@@ -58,6 +58,15 @@ fn render_about_build(repo_root: &Path) -> String {
     let repository = git_output(repo_root, &["remote", "get-url", "origin"])
         .and_then(|value| parse_github_slug(&value));
     let commit = git_output(repo_root, &["rev-parse", "--short=9", "HEAD"]);
+    let version = env::var("CARGO_PKG_VERSION").expect("missing package version");
+    let display_version = match git_output(repo_root, &["describe", "--tags", "--match", "v[0-9]*", "--long", "--abbrev=9", "HEAD"]) {
+        Some(description) if description.rsplitn(3, '-').nth(1) == Some("0") => version,
+        Some(description) => description.trim_start_matches('v').to_owned(),
+        None => match &commit {
+            Some(hash) => format!("{version}+g{hash}"),
+            None => version,
+        },
+    };
     let changelog = read_changelog(repo_root);
 
     let mut output = String::new();
@@ -66,6 +75,9 @@ fn render_about_build(repo_root: &Path) -> String {
     output.push_str(";\n");
     output.push_str("pub const BUILD_GIT_COMMIT: Option<&str> = ");
     output.push_str(&render_optional_str(commit.as_deref()));
+    output.push_str(";\n");
+    output.push_str("pub const BUILD_DISPLAY_VERSION: &str = ");
+    output.push_str(&render_str(&display_version));
     output.push_str(";\n");
     output.push_str("pub const BUILD_CHANGELOG: &[EmbeddedChangelogEntry] = &[\n");
 

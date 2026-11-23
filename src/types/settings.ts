@@ -32,6 +32,7 @@ export interface DeviceSettings {
 
 export interface AboutInfo {
   current_version: string;
+  display_version: string;
   platform: string;
   build_commit: string | null;
   release_repo: string | null;

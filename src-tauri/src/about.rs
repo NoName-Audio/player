@@ -15,6 +15,7 @@ include!(concat!(env!("OUT_DIR"), "/about_build.rs"));
 #[derive(serde::Serialize)]
 pub struct AboutInfo {
     pub current_version: String,
+    pub display_version: &'static str,
     pub platform: String,
     pub build_commit: Option<String>,
     pub release_repo: Option<String>,
@@ -63,6 +64,7 @@ struct GithubRelease {
 pub fn about_info() -> AboutInfo {
     AboutInfo {
         current_version: env!("CARGO_PKG_VERSION").to_string(),
+        display_version: BUILD_DISPLAY_VERSION,
         platform: std::env::consts::OS.to_string(),
         build_commit: BUILD_GIT_COMMIT.map(str::to_string),
         release_repo: BUILD_GITHUB_REPOSITORY.map(str::to_string),
@@ -194,6 +196,41 @@ fn find_platform_asset(assets: &[GithubAsset]) -> Option<String> {
         .iter()
         .find(|a| a.name.to_lowercase().ends_with(ext))
         .map(|a| a.browser_download_url.clone())
+}
+
+#[derive(Deserialize, serde::Serialize)]
+struct ReleaseNote {
+    tag_name: String,
+    body: Option<String>,
+    published_at: Option<String>,
+    draft: bool,
+    prerelease: bool,
+}
+
+#[derive(serde::Serialize)]
+pub struct ReleaseNotesPage {
+    releases: Vec<ReleaseNote>,
+    next_page: Option<u32>,
+}
+
+#[tauri::command]
+pub async fn about_release_notes(page: u32) -> Result<ReleaseNotesPage, String> {
+    let repo = BUILD_GITHUB_REPOSITORY.unwrap_or("NoName-Audio/player");
+    let response = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build().map_err(|err| err.to_string())?
+        .get(format!("https://api.github.com/repos/{repo}/releases?per_page=5&page={page}"))
+        .header(USER_AGENT, concat!("player/", env!("CARGO_PKG_VERSION")))
+        .header(ACCEPT, "application/vnd.github+json")
+        .send().await.map_err(|err| err.to_string())?
+        .error_for_status().map_err(|err| err.to_string())?;
+    let next_page = response.headers().get(reqwest::header::LINK)
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| value.split(',').any(|link| link.trim_end().ends_with("; rel=\"next\"")))
+        .and_then(|_| page.checked_add(1));
+    let mut releases: Vec<ReleaseNote> = response.json().await.map_err(|err| err.to_string())?;
+    releases.retain(|release| !release.draft && !release.prerelease);
+    Ok(ReleaseNotesPage { releases, next_page })
 }
 
 fn fetch_latest_release(repo_slug: &str) -> Result<GithubRelease, String> {
