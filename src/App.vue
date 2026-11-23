@@ -8,7 +8,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { relaunch } from "@tauri-apps/plugin-process";
-import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
+import { ask, open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import {
   TRACK_RARITY_OPTIONS,
@@ -938,6 +938,25 @@ async function shareTrackFromTrackContext() {
   } catch (error) {
     console.error('Failed to reveal shared track:', error);
     alert(`Failed to reveal track in folder.\n${String(error)}`);
+  }
+}
+
+async function deleteTrackFromContext() {
+  const menu = trackContextMenu.value;
+  trackContextMenu.value = null;
+  if (!menu || menu.track.id <= 0 || menu.track.plugin_source) return;
+  const { track } = menu;
+  try {
+    if (!await ask(`Permanently delete “${track.title || track.path}” from disk and remove it from your library?`, {
+      title: 'Delete track', kind: 'warning', okLabel: 'Delete', cancelLabel: 'Cancel',
+    })) return;
+    await invoke('delete_track_from_disk', { id: track.id });
+    queue.value = queue.value.filter(item => item.id !== track.id);
+    queuePlaylistTracks.value = queuePlaylistTracks.value.filter(item => item.id !== track.id);
+    if (menu.fromDetail) showDetail.value = false;
+    if (playlistView.value) await loadPlaylistPage(playlistView.value.id, playlistView.value.name);
+  } catch (error) {
+    alert(`Could not delete track.\n${String(error)}`);
   }
 }
 
@@ -5137,6 +5156,7 @@ onUnmounted(() => {
           Remove from playlist
         </button>
         <button class="playlist-menu-item danger" @click="hideTrackAsDuplicateFromTrackContext">Hide (mark as duplicate)</button>
+        <button v-if="trackContextMenu.track.id > 0 && !trackContextMenu.track.plugin_source" class="playlist-menu-item danger" @click="deleteTrackFromContext">Delete from disk…</button>
       </template>
     </ResponsivePopup>
     </div>

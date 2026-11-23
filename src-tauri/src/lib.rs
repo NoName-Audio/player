@@ -288,6 +288,7 @@ pub fn run() {
             library::get_artist_albums,
             library::get_data_dir,
             library::reveal_track_in_folder,
+            library::delete_track_from_disk,
             library::record_play,
             library::get_recent_tracks,
             library::get_play_history,

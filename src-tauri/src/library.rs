@@ -3831,10 +3831,43 @@ pub fn get_data_dir(state: tauri::State<'_, LibraryState>) -> String {
 }
 
 #[tauri::command]
+pub fn delete_track_from_disk(id: i64, state: tauri::State<'_, LibraryState>, app: tauri::AppHandle) -> Result<(), String> {
+    remove_library_track(&state.conn.lock().unwrap(), &state.data_dir, id)
+        .map_err(|error| error.to_string())?;
+    use tauri::Emitter;
+    let _ = app.emit("library-changed", ());
+    Ok(())
+}
+
+fn remove_library_track(conn: &Connection, data_dir: &Path, id: i64) -> Result<(), BoxError> {
+    let tx = conn.unchecked_transaction()?;
+    let (path, shared): (String, bool) = tx.query_row(
+        "SELECT path, COALESCE(source_kind, 'file') <> 'file' OR EXISTS (
+            SELECT 1 FROM tracks other WHERE other.id <> t.id AND other.source_path = t.path
+        ) FROM tracks t WHERE id = ?1",
+        [id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    if shared {
+        return Err("Cannot delete a track backed by a shared source file".into());
+    }
+    let root = data_dir.canonicalize()?;
+    let target = root.join(path);
+    if !target.canonicalize()?.starts_with(&root) || !target.symlink_metadata()?.is_file() {
+        return Err("Track must be a regular file inside the library directory".into());
+    }
+    tx.execute("DELETE FROM tracks WHERE id = ?1", [id])?;
+    std::fs::remove_file(target)?;
+    tx.commit()?;
+    Ok(())
+}
+
+#[tauri::command]
 pub fn reveal_track_in_folder(
     path: String,
     absolute: Option<bool>,
     state: tauri::State<'_, LibraryState>,
+    app: tauri::AppHandle,
 ) -> Result<(), String> {
     let base_dir = state
         .data_dir
@@ -3844,7 +3877,7 @@ pub fn reveal_track_in_folder(
     let target = if absolute.unwrap_or(false) {
         requested
     } else {
-        base_dir.join(requested)
+        state.data_dir.join(requested)
     };
 
     let existing_target = nearest_existing_share_target(&target).ok_or_else(|| {
@@ -3858,7 +3891,10 @@ pub fn reveal_track_in_folder(
         return Err("Track path escapes the library directory".into());
     }
 
-    reveal_share_target(&resolved_target)
+    #[cfg(target_os = "windows")]
+    { reveal_share_target(&existing_target, &app) }
+    #[cfg(not(target_os = "windows"))]
+    { let _ = app; reveal_share_target(&resolved_target) }
 }
 
 #[cfg(target_os = "macos")]
@@ -3879,19 +3915,14 @@ fn reveal_share_target(path: &Path) -> Result<(), String> {
 }
 
 #[cfg(target_os = "windows")]
-fn reveal_share_target(path: &Path) -> Result<(), String> {
-    let status = if path.is_file() {
-        ProcessCommand::new("explorer")
-            .arg(format!("/select,{}", path.display()))
-            .status()
-            .map_err(|e| format!("Failed to reveal track in Explorer: {e}"))?
+fn reveal_share_target(path: &Path, app: &tauri::AppHandle) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    if path.is_dir() {
+        app.opener().open_path(path.to_string_lossy(), None::<&str>)
     } else {
-        ProcessCommand::new("explorer")
-            .arg(path)
-            .status()
-            .map_err(|e| format!("Failed to open track directory in Explorer: {e}"))?
-    };
-    reveal_status_result(status)
+        app.opener().reveal_item_in_dir(path)
+    }
+    .map_err(|error| format!("Failed to open track location in Explorer: {error}"))
 }
 
 #[cfg(all(
@@ -4815,6 +4846,29 @@ pub fn unmark_duplicates(
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn delete_track_removes_file_and_row_but_preserves_shared_sources() {
+        let suffix = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let root = std::env::temp_dir().join(format!("player-delete-{suffix}"));
+        std::fs::create_dir(&root).unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        conn.execute_batch("INSERT INTO tracks(id,path) VALUES (1,'single.flac'),(2,'album.flac'),(4,'missing.flac');
+            INSERT INTO tracks(id,path,source_kind,source_path) VALUES (3,'cue-track','cue','album.flac');").unwrap();
+        for path in ["single.flac", "album.flac"] {
+            std::fs::write(root.join(path), b"fixture").unwrap();
+        }
+        remove_library_track(&conn, &root, 1).unwrap();
+        assert!(!root.join("single.flac").exists());
+        for id in [2, 3, 4] {
+            assert!(remove_library_track(&conn, &root, id).is_err());
+        }
+        assert!(root.join("album.flac").is_file());
+        let ids: String = conn.query_row("SELECT group_concat(id) FROM (SELECT id FROM tracks ORDER BY id)", [], |row| row.get(0)).unwrap();
+        assert_eq!(ids, "2,3,4");
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn indexing_is_idempotent_for_cue_and_regular_files() {
