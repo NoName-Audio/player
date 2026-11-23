@@ -195,6 +195,7 @@ does not open a permission prompt from the background.
 ### UI and platform
 
 - Responsive desktop/mobile layout.
+- Pinned playlist cards on Home use the first track with a cover in playlist order, including Flexible Playlists. Playlists without covers keep their default icon.
 - Android media notification and lock-screen controls.
 - Now-playing view with a Three.js/WebGL album card.
 - Dark and light themes (or following the system) with a choice of accent color and header gradient.

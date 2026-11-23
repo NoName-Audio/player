@@ -3413,6 +3413,25 @@ pub fn get_tracks_page(
         .map_err(|error| error.to_string())
 }
 
+#[tauri::command]
+pub fn get_smart_playlist_cover(
+    rules_json: String,
+    match_mode: String,
+    include_duplicates: bool,
+    state: tauri::State<'_, LibraryState>,
+) -> Result<Option<String>, String> {
+    let rules: Vec<SmartPlaylistEntry> = serde_json::from_str(&rules_json).map_err(|e| e.to_string())?;
+    let (where_clause, values, order_by) =
+        compile_smart_playlist_sql(&rules, &match_mode, include_duplicates);
+    let conn = state.conn.lock().unwrap();
+    let mut stmt = conn.prepare(&format!(
+        "SELECT cover_hash FROM library_tracks WHERE ({where_clause})
+         AND cover_hash IS NOT NULL AND cover_hash <> '' ORDER BY {order_by} LIMIT 1"
+    )).map_err(|e| e.to_string())?;
+    let mut rows = stmt.query(params_from_iter(values.iter())).map_err(|e| e.to_string())?;
+    rows.next().and_then(|row| row.map(|row| row.get(0)).transpose()).map_err(|e| e.to_string())
+}
+
 /// Resolves flexible-playlist rules in SQLite and returns only one UI page.
 #[tauri::command]
 pub fn get_smart_playlist_tracks_page(

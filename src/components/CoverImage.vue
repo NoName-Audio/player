@@ -38,7 +38,7 @@ const placeholderStyle = computed(() => (props.placeholder
       @error="failed = true"
     >
     <ImageLoader v-if="showLoader" />
-    <slot />
+    <slot :loaded="loaded" />
   </div>
 </template>
 

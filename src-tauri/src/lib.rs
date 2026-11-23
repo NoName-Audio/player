@@ -278,6 +278,7 @@ pub fn run() {
             library::get_track_waveform,
             library::get_tracks_page,
             library::get_smart_playlist_tracks_page,
+            library::get_smart_playlist_cover,
             library::get_smart_playlist_values,
             library::index_track_by_path,
             library::reindex,

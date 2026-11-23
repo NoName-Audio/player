@@ -990,7 +990,7 @@ const smartViewLoadingMore = ref(false);
 const editingSPTracks = ref<Track[]>([]);
 const editingSPTotal = ref(0);
 const editingSPLoading = ref(false);
-const smartPlaylistPreviews = ref<Record<string, TrackPage>>({});
+const smartPlaylistPreviews = ref<Record<string, TrackPage & { coverHash: string | null }>>({});
 const smartPlaylistValues = ref<Partial<Record<SPField, string[]>>>({});
 const showNewSPInput = ref(false);
 const newSPName = ref('');
@@ -1056,7 +1056,18 @@ async function loadSmartPlaylistPreviews() {
     smartPlaylistPreviews.value = {};
     return;
   }
-  const pages = await Promise.all(smartPlaylists.value.map(async (sp) => [sp.id, await getSmartPlaylistPage(sp, 4)] as const));
+  const pages = await Promise.all(smartPlaylists.value.map(async (sp) => {
+    const page = await getSmartPlaylistPage(sp, 4);
+    let coverHash = page.tracks.find(track => track.cover_hash)?.cover_hash ?? null;
+    if (sp.pinned && !coverHash && page.has_more) {
+      coverHash = await invoke<string | null>('get_smart_playlist_cover', {
+        rulesJson: JSON.stringify(sp.rules),
+        matchMode: sp.match,
+        includeDuplicates: showDuplicateTracks.value,
+      });
+    }
+    return [sp.id, { ...page, coverHash }] as const;
+  }));
   smartPlaylistPreviews.value = Object.fromEntries(pages);
 }
 
@@ -1300,9 +1311,11 @@ const homePinnedSections = computed<HomePinnedPlaylistSection[]>(() => {
   });
 });
 
-function homePinnedCoverStyle(item: HomePinnedPlaylistItem) {
-  const [left, right] = placeholderCoverColors(item.key);
-  return `background: linear-gradient(135deg, ${left}, ${right})`;
+function homePinnedCoverUrl(item: HomePinnedPlaylistItem) {
+  const hash = item.kind === 'regular'
+    ? homePinnedRegularTracks.value[(item.playlist as Playlist).id]?.find(track => track.cover_hash)?.cover_hash
+    : smartPlaylistPreviews.value[(item.playlist as SmartPlaylist).id]?.coverHash;
+  return coverUrl(hash, 'medium');
 }
 
 async function openHomePinnedItem(item: HomePinnedPlaylistItem) {
@@ -4377,15 +4390,14 @@ onUnmounted(() => {
                 @touchend="endHomePinnedCardLongPress"
                 @touchcancel="endHomePinnedCardLongPress"
               >
-                <div class="cover" :style="homePinnedCoverStyle(item)">
+                <CoverImage class="cover" :src="homePinnedCoverUrl(item)" :placeholder="placeholderCoverColors(item.key)" v-slot="{ loaded }">
                   <div class="hover-play">
                     <button v-if="item.trackCount" class="green-circle" type="button" @click.stop="playHomePinnedCard(item)">
                       <AppIcon name="play" :size="18" />
                     </button>
                   </div>
-                  <AppIcon name="playlist" v-if="item.kind === 'regular'" :size="30" class="pinned-cover-icon" />
-                  <AppIcon name="smart-playlist" v-else :size="30" class="pinned-cover-icon" />
-                </div>
+                  <AppIcon v-if="!loaded" :name="item.kind === 'regular' ? 'playlist' : 'smart-playlist'" :size="30" class="pinned-cover-icon" />
+                </CoverImage>
                 <div class="card-title">{{ item.name }}</div>
                 <div class="card-artist">{{ item.subtitle }}</div>
               </div>
