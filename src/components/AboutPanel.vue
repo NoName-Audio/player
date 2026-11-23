@@ -143,6 +143,10 @@ function openNoteLink(event: MouseEvent) {
           </li>
         </ul>
       </div>
+      <details v-if="info?.changelog.length" class="changelog">
+        <summary class="control-button changelog-toggle">Recent build commits</summary>
+        <ul><li v-for="entry in info.changelog" :key="entry.short_hash">{{ entry.subject }}</li></ul>
+      </details>
       <div v-if="status?.has_update && status.release_notes" class="release-notes">
         <h3>Release notes</h3>
         <div class="release-notes-content" @click="openNoteLink" v-html="markdown.parse(status.release_notes)" />
@@ -167,10 +171,6 @@ function openNoteLink(event: MouseEvent) {
           <div v-if="autoCheck && !releaseError" :key="nextPage" ref="releaseSentinel" aria-hidden="true" />
         </template>
       </section>
-      <details v-if="info?.changelog.length" class="changelog">
-        <summary class="control-button changelog-toggle">Recent build commits</summary>
-        <ul><li v-for="entry in info.changelog" :key="entry.short_hash">{{ entry.subject }}</li></ul>
-      </details>
       <footer class="about-footer">
         <button type="button" class="control-button text-link" @click="emit('openExternal', 'https://github.com/' + (info?.release_repo || 'NoName-Audio/player') + '/blob/HEAD/public/licenses/third-party.txt')">Licenses <AppIcon name="external-link" :size="14" /></button>
       </footer>
