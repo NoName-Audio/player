@@ -98,7 +98,8 @@ const emit = defineEmits<{
   .topbar.has-page-heading .topbar-actions { grid-column: 4; justify-self: end; }
   .topbar:not(.has-page-heading) { flex-wrap: wrap; }
 }
-.topbar.search-expanded { display: flex; }
-.topbar.search-expanded > :not(.topbar-actions) { display: none; }
-.topbar.search-expanded .topbar-actions { width: 100%; }
+@container topbar (width < 480px) {
+  .topbar.search-expanded > :not(.topbar-actions) { display: none; }
+  .topbar.search-expanded .topbar-actions { grid-column: 1 / -1; width: 100%; }
+}
 </style>

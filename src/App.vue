@@ -200,6 +200,14 @@ async function dismissHeaderSearch() {
   headerSearchToggle.value?.focus();
 }
 watch(activeNav, () => { headerSearchExpanded.value = false; });
+
+function clearSearchQuery(event: MouseEvent) {
+  searchQuery.value = '';
+  handleSearchInput();
+  const toggle = headerSearchToggle.value;
+  if (toggle?.offsetWidth) toggle.focus();
+  else (event.currentTarget as HTMLElement).closest('section')?.querySelector<HTMLButtonElement>('[aria-selected="true"]')?.focus();
+}
 const localSearchTracks = ref<Track[]>([]);
 const localSearchTotal = ref(0);
 const localSearchOffset = ref(0);
@@ -4331,7 +4339,7 @@ onUnmounted(() => {
         <template v-if="activeNav === 'search'" #actions>
           <div class="header-search" :class="{ 'is-expanded': headerSearchExpanded }">
             <button ref="headerSearchToggle" type="button" class="control-button header-search-toggle" aria-label="Open search" @click="expandHeaderSearch"><AppIcon name="search" :size="20" /></button>
-            <input v-model="searchQuery" class="library-search header-search-input" type="search" aria-label="Search tracks, artists, albums, genres" placeholder="Search tracks, artists, albums, genres…" autocomplete="off" autocorrect="off" autocapitalize="none" :spellcheck="false" @input="handleSearchInput" @blur="headerSearchExpanded = false" @keydown.esc="dismissHeaderSearch" />
+            <input v-model="searchQuery" class="library-search header-search-input" type="search" aria-label="Search tracks, artists, albums, genres" placeholder="Search…" autocomplete="off" autocorrect="off" autocapitalize="none" :spellcheck="false" @input="handleSearchInput" @blur="headerSearchExpanded = false" @keydown.esc="dismissHeaderSearch" />
           </div>
         </template>
         <template v-else-if="activeNav === 'home' || (isSettingsNav && settingsSection === 'debug')" #actions>
@@ -4529,13 +4537,15 @@ onUnmounted(() => {
               <button id="search-tab-local" type="button" class="control-button" role="tab" aria-controls="search-panel-local" :aria-selected="activeSearchSource === null" :tabindex="activeSearchSource === null ? 0 : -1" @click="selectedSearchSource = null">Local Library</button>
               <button v-for="(provider, index) in pluginSearchProviders" :id="`search-tab-plugin-${index}`" :key="provider.key" type="button" class="control-button" role="tab" :aria-controls="`search-panel-plugin-${index}`" :aria-selected="activeSearchSource === provider.key" :tabindex="activeSearchSource === provider.key ? 0 : -1" @click="selectedSearchSource = provider.key">{{ provider.label }}</button>
             </div>
+            <div v-if="searchQuery.trim()" class="search-current-query">
+              <span>Query: <strong>{{ searchQuery.trim() }}</strong></span>
+              <button type="button" class="control-button control-button-compact" aria-label="Clear search query" @click="clearSearchQuery">Clear</button>
+            </div>
             <div v-show="activeSearchSource === null" id="search-panel-local" role="tabpanel" aria-labelledby="search-tab-local" tabindex="0">
             <div v-if="libraryLoading" class="library-empty">Loading...</div>
 
             <template v-else>
               <template v-if="!searchQuery.trim()">
-                <p class="search-empty-copy">Search your local library and enabled plugin sources.</p>
-
                 <div v-if="searchRecentTracks.length" class="section-head search-section-head">
                   <h2>Start From Recent</h2>
                 </div>
@@ -6281,13 +6291,16 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: var(--spa
 }
 .library-search::placeholder { color: var(--color-text-faint); }
 .library-search:focus { outline: 1px solid var(--color-border-strong); }
-.header-search-input { box-sizing: border-box; width: clamp(220px, 42cqi, 420px); height: 40px; }
+.header-search .header-search-input { box-sizing: border-box; width: clamp(220px, 48cqi, 420px); height: 40px; }
 .header-search-toggle { display: none; width: 40px; padding: 0; align-items: center; justify-content: center; }
 @container topbar (width < 480px) {
   .header-search:not(.is-expanded) .header-search-input { display: none; }
   .header-search:not(.is-expanded) .header-search-toggle { display: inline-flex; }
+  .header-search.is-expanded, .header-search.is-expanded .header-search-input { width: 100%; }
 }
-.header-search.is-expanded, .header-search.is-expanded .header-search-input { width: 100%; }
+.search-current-query { display: flex; align-items: center; justify-content: space-between; gap: var(--control-gap); margin-bottom: var(--space-2); color: var(--color-text-muted); }
+.search-current-query span { min-width: 0; overflow-wrap: anywhere; }
+.search-current-query strong { color: var(--color-text); }
 .library-empty {
   color: var(--color-text-muted); font-size: var(--fs-empty); padding: var(--space-8) 0;
 }
