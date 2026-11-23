@@ -195,6 +195,7 @@ does not open a permission prompt from the background.
 ### UI and platform
 
 - Responsive desktop/mobile layout.
+- Search separates the local library and enabled plugin sources into tabs with a shared query field in the top bar. On narrow layouts, the search icon opens a full-width field that collapses when focus leaves it.
 - Pinned playlist cards on Home use the first track with a cover in playlist order, including Flexible Playlists. The playlist type icon stays visible over the cover or on the default placeholder.
 - The first launch after installing or upgrading creates the **New Tracks** flexible playlist and pins it to Home. It sorts by date added, newest first. The playlist is not recreated if deleted or pinned again if unpinned.
 - Android media notification and lock-screen controls.

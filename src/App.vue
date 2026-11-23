@@ -185,6 +185,21 @@ const libraryHasMore = ref(false);
 const libraryPageSize = ref(12);
 const libraryLoadingMore = ref(false);
 const searchQuery = ref("");
+const headerSearchExpanded = ref(false);
+const headerSearchToggle = ref<HTMLButtonElement>();
+async function expandHeaderSearch(event: MouseEvent) {
+  const input = (event.currentTarget as HTMLElement).parentElement?.querySelector('input');
+  headerSearchExpanded.value = true;
+  await nextTick();
+  if (headerSearchExpanded.value) input?.focus();
+}
+async function dismissHeaderSearch() {
+  if (!headerSearchExpanded.value) return;
+  headerSearchExpanded.value = false;
+  await nextTick();
+  headerSearchToggle.value?.focus();
+}
+watch(activeNav, () => { headerSearchExpanded.value = false; });
 const localSearchTracks = ref<Track[]>([]);
 const localSearchTotal = ref(0);
 const localSearchOffset = ref(0);
@@ -3948,6 +3963,22 @@ providePluginHost(pluginHost);
 const pluginPages = pluginHost.contributions('page');
 const pluginMenuPages = computed(() => pluginPages.value.filter(page => page.showInMenu !== false));
 const pluginSearchProviders = pluginHost.contributions('search');
+const selectedSearchSource = ref<string | null>(null);
+const activeSearchSource = computed(() => pluginSearchProviders.value.find(provider => provider.key === selectedSearchSource.value)?.key ?? null);
+watch(activeSearchSource, (key) => { if (key === null) selectedSearchSource.value = null; });
+
+function navigateSearchTabs(event: KeyboardEvent) {
+  const tabs = Array.from((event.currentTarget as HTMLElement).querySelectorAll<HTMLButtonElement>('[role="tab"]'));
+  const index = tabs.indexOf(event.target as HTMLButtonElement);
+  if (index < 0) return;
+  const next = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1
+    : event.key === 'ArrowRight' ? (index + 1) % tabs.length
+    : event.key === 'ArrowLeft' ? (index + tabs.length - 1) % tabs.length : -1;
+  if (next < 0) return;
+  event.preventDefault();
+  tabs[next]?.click();
+  tabs[next]?.focus();
+}
 const pluginTrackActions = pluginHost.contributions('track-action');
 const pluginWidgets = pluginHost.contributions('player-widget');
 const activePluginPage = computed(() => pluginPages.value.find(page => activeNav.value === `plugins/${page.pluginId}/${page.id}`));
@@ -4292,11 +4323,18 @@ onUnmounted(() => {
         :subtitle="pageSubtitle"
         :can-nav-back="canNavBack"
         :can-nav-forward="canNavForward"
+        :search-expanded="activeNav === 'search' && headerSearchExpanded"
         @open-menu="showMobileNav = true"
         @nav-back="navBack"
         @nav-forward="navForward"
       >
-        <template v-if="activeNav === 'home' || (isSettingsNav && settingsSection === 'debug')" #actions>
+        <template v-if="activeNav === 'search'" #actions>
+          <div class="header-search" :class="{ 'is-expanded': headerSearchExpanded }">
+            <button ref="headerSearchToggle" type="button" class="control-button header-search-toggle" aria-label="Open search" @click="expandHeaderSearch"><AppIcon name="search" :size="20" /></button>
+            <input v-model="searchQuery" class="library-search header-search-input" type="search" aria-label="Search tracks, artists, albums, genres" placeholder="Search tracks, artists, albums, genres…" autocomplete="off" autocorrect="off" autocapitalize="none" :spellcheck="false" @input="handleSearchInput" @blur="headerSearchExpanded = false" @keydown.esc="dismissHeaderSearch" />
+          </div>
+        </template>
+        <template v-else-if="activeNav === 'home' || (isSettingsNav && settingsSection === 'debug')" #actions>
           <button v-if="activeNav === 'home'" class="control-button control-button-compact import-files-action" @click="uploadFiles"><AppIcon name="folder" /> Add files</button>
           <div v-else id="debug-sql-header-actions" />
         </template>
@@ -4487,20 +4525,11 @@ onUnmounted(() => {
         <!-- Search view -->
         <template v-else-if="activeNav === 'search'">
           <section>
-            <div class="library-header page-toolbar">
-              <input
-                v-model="searchQuery"
-                class="library-search"
-                @input="handleSearchInput"
-                type="text"
-                autocomplete="off"
-                autocorrect="off"
-                autocapitalize="none"
-                :spellcheck="false"
-                placeholder="Search tracks, artists, albums, genres..."
-              />
+            <div class="search-source-tabs" role="tablist" aria-label="Search sources" @keydown="navigateSearchTabs">
+              <button id="search-tab-local" type="button" class="control-button" role="tab" aria-controls="search-panel-local" :aria-selected="activeSearchSource === null" :tabindex="activeSearchSource === null ? 0 : -1" @click="selectedSearchSource = null">Local Library</button>
+              <button v-for="(provider, index) in pluginSearchProviders" :id="`search-tab-plugin-${index}`" :key="provider.key" type="button" class="control-button" role="tab" :aria-controls="`search-panel-plugin-${index}`" :aria-selected="activeSearchSource === provider.key" :tabindex="activeSearchSource === provider.key ? 0 : -1" @click="selectedSearchSource = provider.key">{{ provider.label }}</button>
             </div>
-
+            <div v-show="activeSearchSource === null" id="search-panel-local" role="tabpanel" aria-labelledby="search-tab-local" tabindex="0">
             <div v-if="libraryLoading" class="library-empty">Loading...</div>
 
             <template v-else>
@@ -4530,9 +4559,6 @@ onUnmounted(() => {
                   <span><strong>{{ searchAlbumCount }}</strong> albums on this page</span>
                 </div>
 
-                <div class="section-head search-section-head">
-                  <h2>Local Library</h2>
-                </div>
 
                 <div v-if="localSearchLoading" class="library-empty search-inline-empty">Searching local library…</div>
 
@@ -4560,7 +4586,10 @@ onUnmounted(() => {
               </template>
 
             </template>
-            <PluginSearch v-for="provider in pluginSearchProviders" :key="provider.key" :contribution="provider" :query="searchQuery" />
+            </div>
+            <div v-for="(provider, index) in pluginSearchProviders" v-show="activeSearchSource === provider.key" :id="`search-panel-plugin-${index}`" :key="provider.key" role="tabpanel" :aria-labelledby="`search-tab-plugin-${index}`" tabindex="0">
+              <PluginSearch :contribution="provider" :query="searchQuery" />
+            </div>
           </section>
         </template>
 
@@ -6252,9 +6281,29 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: var(--spa
 }
 .library-search::placeholder { color: var(--color-text-faint); }
 .library-search:focus { outline: 1px solid var(--color-border-strong); }
+.header-search-input { box-sizing: border-box; width: clamp(220px, 42cqi, 420px); height: 40px; }
+.header-search-toggle { display: none; width: 40px; padding: 0; align-items: center; justify-content: center; }
+@container topbar (width < 480px) {
+  .header-search:not(.is-expanded) .header-search-input { display: none; }
+  .header-search:not(.is-expanded) .header-search-toggle { display: inline-flex; }
+}
+.header-search.is-expanded, .header-search.is-expanded .header-search-input { width: 100%; }
 .library-empty {
   color: var(--color-text-muted); font-size: var(--fs-empty); padding: var(--space-8) 0;
 }
+.search-source-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--control-gap);
+  padding-block: var(--space-2);
+  margin-bottom: var(--space-4);
+}
+.search-source-tabs .control-button[aria-selected='true'] {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: var(--color-on-accent);
+}
+
 .search-empty-copy {
   color: var(--color-text-muted);
   font-size: var(--fs-body-md);

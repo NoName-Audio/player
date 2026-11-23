@@ -6,6 +6,7 @@ defineProps<{
   canNavForward: boolean;
   title?: string;
   subtitle?: string;
+  searchExpanded?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -16,7 +17,7 @@ const emit = defineEmits<{
 </script>
 
 <template>
-  <header class="topbar" :class="{ 'has-page-heading': title }">
+  <header class="topbar" :class="{ 'has-page-heading': title, 'search-expanded': searchExpanded }">
     <button class="burger-btn" @click="emit('openMenu')" aria-label="Menu">
       <AppIcon name="menu" :size="24" />
     </button>
@@ -34,6 +35,7 @@ const emit = defineEmits<{
 
 <style scoped>
 .topbar {
+  container: topbar / inline-size;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -96,4 +98,7 @@ const emit = defineEmits<{
   .topbar.has-page-heading .topbar-actions { grid-column: 4; justify-self: end; }
   .topbar:not(.has-page-heading) { flex-wrap: wrap; }
 }
+.topbar.search-expanded { display: flex; }
+.topbar.search-expanded > :not(.topbar-actions) { display: none; }
+.topbar.search-expanded .topbar-actions { width: 100%; }
 </style>
