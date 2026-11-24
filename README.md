@@ -131,7 +131,7 @@ These screenshots were captured with the built-in demo mode. Click any image to 
 - CUE sheet support: each segment of a single-file album is its own track.
 - Artist and album pages, including compilations and guest appearances, with full-size album covers.
 - Cover art from embedded tags or sidecar images (`cover.jpg`, `folder.jpg`, ...), stored once per album as small resized copies.
-- Track editing and identification through AcoustID fingerprints.
+- Track editing and identification through AcoustID fingerprints, including supported audio streams in MP4 videos.
 - Likes, play counts, history, and recent tracks.
 - Duplicate detection: flags duplicates without deleting anything.
 - Drag files or folders anywhere onto the app window to import music. A window-wide drop target appears while dragging; imports copy into the library without moving originals, with progress shown in Activity.

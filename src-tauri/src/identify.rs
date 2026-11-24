@@ -162,7 +162,12 @@ fn generate_fingerprint(
         )
         .map_err(|e| format!("probe: {e}"))?
         .format;
-    let track = format.default_track().ok_or("No audio track")?;
+    let track = format
+        .tracks()
+        .iter()
+        .find(|track| track.codec_params.sample_rate.is_some())
+        .or_else(|| format.default_track())
+        .ok_or("No audio track")?;
     let track_id = track.id;
     let params = track.codec_params.clone();
     let mut time_base = params.time_base.or_else(|| {
