@@ -55,25 +55,32 @@ pub(super) fn save_youtube(root: &Path, source: &Path, resource: &ResourceIdenti
         _ => return Err("Unsupported YouTube media container".into()),
     };
     std::fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
-    let root = root.canonicalize().map_err(|e| e.to_string())?;
-    if !directory.canonicalize().map_err(|e| e.to_string())?.starts_with(root) {
+    let canonical_root = root.canonicalize().map_err(|e| e.to_string())?;
+    if !directory.canonicalize().map_err(|e| e.to_string())?.starts_with(&canonical_root) {
         return Err("YouTube destination escapes the library".into());
     }
     let title: String = resource.title.chars().take(48).collect();
     let title = crate::import_paths::sanitize_path_segment(&title);
     let target = directory.join(format!("{title}.{extension}"));
+    // Keep the real extension for Android shared storage, but hide unfinished
+    // files from the library scanner until the same-volume rename publishes them.
+    let staging_root = root.join(".youtube-imports");
+    std::fs::create_dir_all(&staging_root).map_err(|e| format!("Could not stage YouTube import: {e}"))?;
+    if !staging_root.canonicalize().map_err(|e| e.to_string())?.starts_with(&canonical_root) {
+        return Err("YouTube staging escapes the library".into());
+    }
     use std::sync::atomic::{AtomicU64, Ordering};
     static NEXT_IMPORT: AtomicU64 = AtomicU64::new(0);
     let staging = loop {
         let serial = NEXT_IMPORT.fetch_add(1, Ordering::Relaxed);
-        let path = directory.join(format!(".import-{}-{serial}", std::process::id()));
+        let path = staging_root.join(format!(".import-{}-{serial}", std::process::id()));
         match std::fs::create_dir(&path) {
             Ok(()) => break path,
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(error) => return Err(format!("Could not stage YouTube import: {error}")),
         }
     };
-    let temp = staging.join("media.partial");
+    let temp = staging.join(format!("media.{extension}"));
     let result = write_tags(source, &temp, extension, resource)
         .and_then(|()| std::fs::rename(&temp, &target).map_err(|e| format!("Could not publish YouTube import: {e}")));
     let _ = std::fs::remove_file(&temp);

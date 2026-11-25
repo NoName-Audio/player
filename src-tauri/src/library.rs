@@ -49,6 +49,7 @@ const SOURCE_KIND_CUE: &str = "cue";
 const INTERNAL_LIBRARY_DIRECTORIES: &[&str] = &[
     ".covers",
     ".player-transactions",
+    ".youtube-imports",
     ".soulseek-temp",
     ".soulseek-cover-cache",
     ".soulseek-preview-cache",
