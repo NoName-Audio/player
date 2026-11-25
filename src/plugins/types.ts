@@ -56,6 +56,7 @@ export interface ResultAction { id: string; label: string; disabled?: boolean; d
 export interface SearchItem {
   id: string; title: string; subtitle?: string; coverHash?: string | null; coverLoading?: boolean;
   status?: string; actions?: ResultAction[];
+  progress?: number | null;
 }
 /** Async providers publish completion through renderSearch after a host revision. */
 export interface SearchResult { items: SearchItem[]; nextCursor: string | null; pending?: boolean; searchId?: string; error?: string }

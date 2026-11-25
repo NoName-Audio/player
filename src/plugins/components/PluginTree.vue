@@ -49,7 +49,13 @@ onUnmounted(() => window.removeEventListener('click', closeDownload));
     <div v-for="item in node.items || []" :key="item.id" class="plugin-result">
       <input v-if="selection" class="form-checkbox" type="checkbox" :aria-label="`Select ${item.title}`" :checked="selection.has(item.id)" :disabled="busy || unavailable?.has(item.id)" @change="emit('select', item.id, ($event.target as HTMLInputElement).checked)" />
       <CoverImage class="track-cover-sm" :src="coverUrl(item.coverHash, 'small')" :loading="item.coverLoading" />
-      <div class="plugin-result-copy"><strong>{{ item.title }}</strong><span>{{ item.subtitle }}</span><span v-if="item.status">{{ item.status }}</span></div>
+      <div class="plugin-result-copy">
+        <strong>{{ item.title }}</strong><span v-if="item.subtitle">{{ item.subtitle }}</span><span v-if="item.status">{{ item.status }}</span>
+        <div v-if="item.progress !== undefined" class="plugin-result-progress">
+          <progress :aria-label="`Downloading ${item.title}`" :value="item.progress ?? undefined" max="100" />
+          <span>{{ item.progress === null ? 'Downloading…' : `${Math.floor(item.progress)}%` }}</span>
+        </div>
+      </div>
       <div class="plugin-result-actions">
         <template v-for="action in item.actions || []" :key="action.id">
           <ResponsivePopup v-if="action.downloadOptions && action.id !== 'save'" anchored :open="openDownload === resultButton(path, item.id, action.id)" @close="closeDownload">
@@ -81,5 +87,8 @@ onUnmounted(() => window.removeEventListener('click', closeDownload));
 .plugin-group > .control-button { justify-self: start; }.plugin-results { display: grid; gap: var(--space-2); }.plugin-result { display: flex; gap: var(--space-3); align-items: center; padding: var(--space-3) 0; border-bottom: 1px solid var(--color-border); }
 .plugin-result > .track-cover-sm { width: 36px; height: 36px; border-radius: 3px; flex-shrink: 0; }
 .plugin-result-copy { min-width: 0; flex: 1; display: grid; gap: var(--space-1); }.plugin-result-copy strong,.plugin-result-copy span { overflow-wrap: anywhere; }.plugin-result-copy span { color: var(--color-text-muted); font-size: 12px; }.plugin-result-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.plugin-result-progress { display: flex; align-items: center; gap: var(--space-2); }
+.plugin-result-progress progress { flex: 1; min-width: 0; height: 6px; accent-color: var(--color-accent); }
+.plugin-result-progress span { flex-shrink: 0; font-variant-numeric: tabular-nums; }
 @media(max-width: 650px) { .plugin-result { flex-wrap: wrap; }.plugin-result > .track-cover-sm { width: 32px; height: 32px; }.plugin-result-actions { width: 100%; justify-content: flex-end; } }
 </style>

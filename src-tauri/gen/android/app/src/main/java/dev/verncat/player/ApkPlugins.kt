@@ -1,7 +1,6 @@
 package dev.verncat.player
 
 import android.app.Activity
-import android.app.AlertDialog
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageInfo
@@ -20,7 +19,6 @@ import java.io.File
 import java.lang.reflect.InvocationTargetException
 import java.security.MessageDigest
 import java.util.concurrent.Executors
-import java.util.concurrent.CompletableFuture
 import java.util.zip.ZipFile
 
 @InvokeArg
@@ -256,7 +254,6 @@ internal class InstalledApkRuntime(private val context: Context, private val hos
         }
         val host: (String, String) -> String = { method, arguments ->
             if (args.method == "canShare") "{\"ok\":false,\"error\":\"Host calls are unavailable during canShare\"}"
-            else if (args.method == "share" && method == "share.downloadOptions") downloadOptions()
             else hostCall(args.hostToken, method, arguments)
         }
         val response = module.call.invoke(module.instance, args.method, args.argsJson, host) as? String
@@ -266,31 +263,6 @@ internal class InstalledApkRuntime(private val context: Context, private val hos
         val result = parsed.nextValue()
         require(parsed.nextClean() == '\u0000') { "Trailing data in native response" }
         return JSObject().apply { put("result", result) }
-    }
-
-    private fun downloadOptions(): String {
-        val activity = MainActivity.instance?.get() ?: return "{\"ok\":true,\"value\":null}"
-        val result = CompletableFuture<JSONObject?>()
-        activity.runOnUiThread {
-            if (activity.isFinishing || activity.isDestroyed) {
-                result.complete(null)
-                return@runOnUiThread
-            }
-            val selected = booleanArrayOf(false, false)
-            val dialog = AlertDialog.Builder(activity)
-                .setTitle("Download options")
-                .setMultiChoiceItems(arrayOf("Include video", "Save data (lower quality)"), selected) { _, index, checked ->
-                    selected[index] = checked
-                }
-                .setNegativeButton(android.R.string.cancel, null)
-                .setPositiveButton("Download") { _, _ ->
-                    result.complete(JSONObject().put("video", selected[0]).put("saveData", selected[1]))
-                }
-                .create()
-            dialog.setOnDismissListener { result.complete(null) }
-            activity.showShareDialog(dialog)
-        }
-        return JSONObject().put("ok", true).put("value", result.get() ?: JSONObject.NULL).toString()
     }
 
     private fun stop(module: Loaded) {

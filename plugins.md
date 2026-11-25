@@ -54,11 +54,11 @@ Declare the `library.import` permission and a `share-handler` contribution, e.g.
 
 - `canShare` receives untrusted metadata: `{"url":"…"}` or `{"name":"…","mime":"…"}`. Return JSON `true` for supported items. No host calls, UI, or side effects.
 - `share` receives the same metadata. Return `{"handled":true}` to consume the item (including when the user cancels plugin UI), or `{"handled":false}` to decline.
+- To open the plugin’s search tab, return `{"handled":true,"searchQuery":"…"}`. Player runs the query in that tab.
 
 Player calls a sole match directly. With multiple matches, it offers only matching plugins and, for files, direct library import. Cancel does nothing. Files fall back to library import if no plugin matches or the sole match declines; an explicit plugin choice never falls back.
 
 - During file `share`, `host.call("share.read", {"offset":0,"length":65536})` returns `{"data":"…"}` in base64. Read 1–65536 bytes per call, advance by the decoded length, and stop on empty data. No file path or URI is exposed.
-- During APK `share`, `host.call("share.downloadOptions", {})` returns `{video, saveData}` or `null` on cancel. On cancel, consume the item without downloading.
 
 ## Component attachments
 

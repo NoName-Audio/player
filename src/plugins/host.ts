@@ -14,6 +14,7 @@ export function createPluginHost(options: HostOptions) {
   const starting = ref<string[]>([]);
   const revision = ref(0);
   const loading = ref(true);
+  const downloadProgress = ref<Record<string, {generation: number; title: string; percent: number | null}>>({});
   const operations = new Map<string, Promise<unknown>>();
   const unlisteners: UnlistenFn[] = [];
   const backlog = new Map<string, PluginEvent[]>();
@@ -171,6 +172,11 @@ export function createPluginHost(options: HostOptions) {
       unlisteners.push(await listen<{pluginId: string; generation: number}>('plugin-invalidated', ({ payload }) => {
         if (plugins.value.some(p => p.manifest.id === payload.pluginId && p.enabled && p.generation === payload.generation)) invalidate();
       }));
+      unlisteners.push(await listen<{pluginId: string; generation: number; title: string; percent: number | null; active: boolean}>('plugin-download-progress', ({payload}) => {
+        if (!plugins.value.some(p => p.manifest.id === payload.pluginId && p.enabled && p.generation === payload.generation)) return;
+        if (payload.active) downloadProgress.value[payload.pluginId] = payload;
+        else delete downloadProgress.value[payload.pluginId];
+      }));
       unlisteners.push(await listen<{pluginId:string;generation:number;error:string}>('plugin-runtime-error', ({payload}) => {
         if (plugins.value.some(p => p.manifest.id === payload.pluginId && p.enabled && p.generation === payload.generation)) errors.value = {...errors.value,[payload.pluginId]:payload.error};
       }));
@@ -190,7 +196,7 @@ export function createPluginHost(options: HostOptions) {
     }
   });
   onUnmounted(() => { disposed = true; unlisteners.forEach(stop => stop()); running.value = []; });
-  return { plugins, errors, running, starting, revision, loading, contributions, attachments, attachmentQueue, call, refresh, setEnabled, retry, install, uninstall };
+  return { plugins, errors, running, starting, revision, loading, downloadProgress, contributions, attachments, attachmentQueue, call, refresh, setEnabled, retry, install, uninstall };
 }
 export type PluginHost = ReturnType<typeof createPluginHost>;
 const key: InjectionKey<PluginHost> = Symbol('PlayerPluginHost');
@@ -209,6 +215,7 @@ export function validateUiNode(node: unknown, depth = 0): UiNode {
     if (!Array.isArray(n.items) || n.items.length > 1000) throw new Error('Too many results');
     for (const item of n.items) {
       if (!item || typeof item.id !== 'string' || item.id.length > 8000 || typeof item.title !== 'string' || item.title.length > 4000 || (item.subtitle !== undefined && (typeof item.subtitle !== 'string' || item.subtitle.length > 8000))) throw new Error('Invalid search item');
+      if (item.progress != null && (!Number.isFinite(item.progress) || item.progress < 0 || item.progress > 100)) throw new Error('Invalid result progress');
       if (item.actions && (!Array.isArray(item.actions) || item.actions.length > 10 || item.actions.some(a => typeof a.id !== 'string' || typeof a.label !== 'string' || a.label.length > 200))) throw new Error('Invalid result action');
     }
   }

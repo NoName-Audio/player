@@ -48,6 +48,8 @@ import { createPluginHost, providePluginHost } from './plugins/host';
 import { pluginTrack } from './plugins/tracks';
 import type { ResourceIdentity, UiContribution } from './plugins/types';
 import PluginPanel from './plugins/components/PluginPanel.vue';
+import PluginStatus from './plugins/components/PluginStatus.vue';
+import PluginTree from './plugins/components/PluginTree.vue';
 import PluginSearch from './plugins/components/PluginSearch.vue';
 import SettingsView from "./components/SettingsView.vue";
 import AboutPanel from "./components/AboutPanel.vue";
@@ -4019,6 +4021,10 @@ function navigateSearchTabs(event: KeyboardEvent) {
 }
 const pluginTrackActions = pluginHost.contributions('track-action');
 const pluginWidgets = pluginHost.contributions('player-widget');
+const pluginDownloads = computed(() => pluginHost.plugins.value.flatMap(plugin => {
+  const progress = pluginHost.downloadProgress.value[plugin.manifest.id];
+  return plugin.enabled && progress?.generation === plugin.generation ? [{ manifest: plugin.manifest, progress }] : [];
+}));
 const activePluginPage = computed(() => pluginPages.value.find(page => activeNav.value === `plugins/${page.pluginId}/${page.id}`));
 async function runPluginTrackAction(action: UiContribution) {
   const track = trackContextMenu.value?.track; trackContextMenu.value = null;
@@ -5581,7 +5587,12 @@ onUnmounted(() => {
       @toggle-mute="toggleMute"
     >
       <template #video-background><div v-if="canShowPlaybackVideo" ref="footerVideoTarget" class="footer-video-background" aria-hidden="true" /></template>
-      <template #plugin-status><PluginPanel v-for="widget in pluginWidgets.filter(w => w.slot === 'player.status')" :key="widget.key" class="player-plugin-status" :plugin-id="widget.pluginId" :view-id="widget.id" /></template>
+      <template #plugin-status>
+        <PluginPanel v-for="widget in pluginWidgets.filter(w => w.slot === 'player.status')" :key="widget.key" class="player-plugin-status" :plugin-id="widget.pluginId" :view-id="widget.id" />
+        <PluginStatus v-for="{ manifest, progress } in pluginDownloads" :key="manifest.id" :manifest="manifest" :node="{ type: 'status', label: `${manifest.name} downloads`, tone: 'active', children: [{ type: 'results' }] }">
+          <PluginTree :node="{ type: 'results', items: [{ id: manifest.id, title: progress.title, progress: progress.percent }] }" :fields="{}" :busy="false" />
+        </PluginStatus>
+      </template>
       <template #plugin-actions><PluginPanel v-for="widget in pluginWidgets.filter(w => w.slot === 'player.actions')" :key="widget.key" :plugin-id="widget.pluginId" :view-id="widget.id" /></template>
     </PlayerBar>
     <Teleport v-if="canShowPlaybackVideo && nativePlaybackSourceId && playbackVideoTarget" :to="playbackVideoTarget">

@@ -125,6 +125,16 @@ impl Host for Context {
             );
             return Ok(Value::Null);
         }
+        if method == "ui.downloadProgress" {
+            if !self.app.state::<PluginState>().manifest(&self.id)?.permissions.iter().any(|permission| permission == "ui") {
+                return Err("PERMISSION_DENIED: ui".into());
+            }
+            let active = args["active"].as_bool().ok_or("Invalid download state")?;
+            let title = args["title"].as_str().filter(|title| title.len() <= 4000).ok_or("Invalid download title")?;
+            let percent = args["percent"].as_f64().filter(|value| (0.0..=100.0).contains(value));
+            self.app.emit("plugin-download-progress", json!({"pluginId": self.id, "generation": self.generation, "title": title, "percent": percent, "active": active})).map_err(|e| e.to_string())?;
+            return Ok(Value::Null);
+        }
         if method == "host.background" {
             let topic = args["topic"]
                 .as_str()

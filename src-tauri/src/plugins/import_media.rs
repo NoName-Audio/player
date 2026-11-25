@@ -62,35 +62,40 @@ pub(super) fn save_youtube(root: &Path, source: &Path, resource: &ResourceIdenti
     let title: String = resource.title.chars().take(48).collect();
     let title = crate::import_paths::sanitize_path_segment(&title);
     let target = directory.join(format!("{title}.{extension}"));
-    // The temporary extension keeps the watcher from indexing an incomplete file.
-    let temp = directory.join(".import.partial");
-    // Remove a leftover from an interrupted import without following symlinks.
-    match std::fs::remove_file(&temp) {
-        Ok(()) => {},
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {},
-        Err(e) => return Err(e.to_string()),
-    }
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT_IMPORT: AtomicU64 = AtomicU64::new(0);
+    let staging = loop {
+        let serial = NEXT_IMPORT.fetch_add(1, Ordering::Relaxed);
+        let path = directory.join(format!(".import-{}-{serial}", std::process::id()));
+        match std::fs::create_dir(&path) {
+            Ok(()) => break path,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(format!("Could not stage YouTube import: {error}")),
+        }
+    };
+    let temp = staging.join("media.partial");
     let result = write_tags(source, &temp, extension, resource)
-        .and_then(|()| std::fs::rename(&temp, &target).map_err(|e| e.to_string()));
-    if result.is_err() { let _ = std::fs::remove_file(&temp); }
+        .and_then(|()| std::fs::rename(&temp, &target).map_err(|e| format!("Could not publish YouTube import: {e}")));
+    let _ = std::fs::remove_file(&temp);
+    let _ = std::fs::remove_dir(&staging);
     result.map(|()| target)
 }
 
 #[cfg(feature = "native-video")]
 fn write_tags(source: &Path, target: &Path, extension: &str, resource: &ResourceIdentity) -> Result<(), String> {
     use ffmpeg_next as ff;
-    let remux = || -> Result<(), ff::Error> {
-        ff::init()?;
+    let remux = || -> Result<(), (&'static str, ff::Error)> {
+        ff::init().map_err(|e| ("initialize FFmpeg", e))?;
         let mut options = ff::Dictionary::new();
         options.set("protocol_whitelist", "file");
-        let mut input = ff::format::input_with_dictionary(source, options)?;
-        let mut output = ff::format::output_as(target, extension)?;
+        let mut input = ff::format::input_with_dictionary(source, options).map_err(|e| ("open source", e))?;
+        let mut output = ff::format::output_as(target, extension).map_err(|e| ("open staging output", e))?;
         let mut streams = vec![None; input.nb_streams() as usize];
         for stream in input.streams() {
             if !matches!(stream.parameters().medium(), ff::media::Type::Audio | ff::media::Type::Video) {
                 continue;
             }
-            let mut dest = output.add_stream(ff::encoder::find(ff::codec::Id::None))?;
+            let mut dest = output.add_stream(ff::encoder::find(ff::codec::Id::None)).map_err(|e| ("copy stream", e))?;
             dest.set_parameters(stream.parameters());
             unsafe { (*dest.parameters().as_mut_ptr()).codec_tag = 0; }
             streams[stream.index()] = Some(dest.index());
@@ -102,18 +107,18 @@ fn write_tags(source: &Path, target: &Path, extension: &str, resource: &Resource
             }
         }
         output.set_metadata(tags);
-        output.write_header()?;
+        output.write_header().map_err(|e| ("write container header", e))?;
         for (stream, mut packet) in input.packets() {
             if let Some(index) = streams[stream.index()] {
                 packet.rescale_ts(stream.time_base(), output.stream(index).unwrap().time_base());
                 packet.set_stream(index);
                 packet.set_position(-1);
-                packet.write_interleaved(&mut output)?;
+                packet.write_interleaved(&mut output).map_err(|e| ("write media packet", e))?;
             }
         }
-        output.write_trailer()
+        output.write_trailer().map_err(|e| ("finalize container", e))
     };
-    remux().map_err(|error| format!("Could not write YouTube media tags: {error}"))
+    remux().map_err(|(stage, error)| format!("Could not save YouTube {extension}: {stage}: {error}"))
 }
 
 #[cfg(not(feature = "native-video"))]
@@ -147,7 +152,7 @@ mod tests {
         let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mp4-opus.mp4");
         std::fs::create_dir_all(&root).unwrap();
         let input = root.join("preview.webm");
-        std::fs::copy(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/opus-mono.opus"), &input).unwrap();
+        std::fs::copy(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/audio-only.webm"), &input).unwrap();
         let mut resource = ResourceIdentity {
             plugin_id: "player.youtube".into(), resource_id: "dQw4w9WgXcQ".into(),
             title: "A title".into(), artist: "An artist".into(), album: "An album".into(),
@@ -158,6 +163,13 @@ mod tests {
         assert_eq!((title.as_deref(), artist.as_deref(), album.as_deref()), (Some("A title"), Some("An artist"), Some("An album")));
         resource.title = "Changed title".into();
         assert_eq!(save_youtube(&root, &source, &resource).unwrap(), saved);
+        resource.resource_id = "abcdefghijk".into();
+        // A previous import must not block or share the next import's staging path.
+        let directory = youtube_directory(&root, &resource.resource_id).unwrap();
+        std::fs::create_dir_all(directory.join(".import.partial")).unwrap();
+        let video = save_youtube(&root, &source, &resource).unwrap();
+        let (title, _, _, _) = crate::video::native::container_metadata(&video).unwrap();
+        assert_eq!(title.as_deref(), Some("Changed title"));
         std::fs::remove_dir_all(root).unwrap();
     }
 }
