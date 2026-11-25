@@ -3985,12 +3985,23 @@ const pluginHost = createPluginHost({
     await loadLibrary(); await loadRecent(); syncAndroid();
   },
   navigate(route, context = {}) { pluginPageContext.value = context; activeNav.value = route; pushNavHistory({ nav: route, target: '', targetArtist: '', pluginContext: context }); showMobileNav.value = false; },
+  openSharedSearch(pluginId, providerId, query) {
+    const provider = pluginSearchProviders.value.find(p => p.pluginId === pluginId && p.id === providerId);
+    if (!provider) return;
+    searchQuery.value = query;
+    selectedSearchSource.value = provider.key;
+    if (activeNav.value !== 'search') pushNavHistory({ nav: 'search', target: '', targetArtist: '' });
+    activeNav.value = 'search';
+    showMobileNav.value = false;
+    sharedSearchRequest.value = { key: provider.key };
+  },
 });
 providePluginHost(pluginHost);
 const pluginPages = pluginHost.contributions('page');
 const pluginMenuPages = computed(() => pluginPages.value.filter(page => page.showInMenu !== false));
 const pluginSearchProviders = pluginHost.contributions('search');
 const selectedSearchSource = ref<string | null>(null);
+const sharedSearchRequest = ref<{ key: string }>();
 const activeSearchSource = computed(() => pluginSearchProviders.value.find(provider => provider.key === selectedSearchSource.value)?.key ?? null);
 watch(activeSearchSource, (key) => { if (key === null) selectedSearchSource.value = null; });
 
@@ -4617,7 +4628,7 @@ onUnmounted(() => {
             </template>
             </div>
             <div v-for="(provider, index) in pluginSearchProviders" v-show="activeSearchSource === provider.key" :id="`search-panel-plugin-${index}`" :key="provider.key" role="tabpanel" :aria-labelledby="`search-tab-plugin-${index}`" tabindex="0">
-              <PluginSearch :contribution="provider" :query="searchQuery" />
+              <PluginSearch :contribution="provider" :query="searchQuery" :shared-request="sharedSearchRequest?.key === provider.key ? sharedSearchRequest : undefined" @shared-search-started="sharedSearchRequest = undefined" />
             </div>
           </section>
         </template>

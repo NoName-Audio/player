@@ -17,8 +17,7 @@ pub(super) fn clean_staging(root: &Path) {
     }
 }
 
-fn youtube_directory(root: &Path, resource: &ResourceIdentity) -> Result<std::path::PathBuf, String> {
-    let id = &resource.resource_id;
+fn youtube_directory(root: &Path, id: &str) -> Result<std::path::PathBuf, String> {
     if id.len() != 11 || !id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_')) {
         return Err("Invalid YouTube video ID".into());
     }
@@ -26,8 +25,8 @@ fn youtube_directory(root: &Path, resource: &ResourceIdentity) -> Result<std::pa
     Ok(root.join("YouTube").join(key.as_str()))
 }
 
-pub(super) fn youtube_target(root: &Path, resource: &ResourceIdentity) -> Result<Option<std::path::PathBuf>, String> {
-    let directory = youtube_directory(root, resource)?;
+pub(super) fn youtube_target(root: &Path, id: &str) -> Result<Option<std::path::PathBuf>, String> {
+    let directory = youtube_directory(root, id)?;
     let entries = match directory.read_dir() {
         Ok(entries) => entries,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -47,10 +46,10 @@ pub(super) fn youtube_target(root: &Path, resource: &ResourceIdentity) -> Result
 }
 
 pub(super) fn save_youtube(root: &Path, source: &Path, resource: &ResourceIdentity) -> Result<std::path::PathBuf, String> {
-    if let Some(existing) = youtube_target(root, resource)? {
+    if let Some(existing) = youtube_target(root, &resource.resource_id)? {
         return Ok(existing);
     }
-    let directory = youtube_directory(root, resource)?;
+    let directory = youtube_directory(root, &resource.resource_id)?;
     let extension = match source.extension().and_then(|ext| ext.to_str()) {
         Some(ext @ ("webm" | "mp4")) => ext,
         _ => return Err("Unsupported YouTube media container".into()),
@@ -120,6 +119,22 @@ fn write_tags(source: &Path, target: &Path, extension: &str, resource: &Resource
 #[cfg(not(feature = "native-video"))]
 fn write_tags(_: &Path, _: &Path, _: &str, _: &ResourceIdentity) -> Result<(), String> {
     Err("Saving tagged YouTube media requires a Player build with native media support".into())
+}
+
+#[cfg(test)]
+#[test]
+fn youtube_presence_tracks_the_saved_file() {
+    let root = std::env::temp_dir().join(format!("player-youtube-presence-{}", std::process::id()));
+    let id = "dQw4w9WgXcQ";
+    let directory = youtube_directory(&root, id).unwrap();
+    std::fs::create_dir_all(&directory).unwrap();
+    let file = directory.join("renamed.webm");
+    std::fs::write(&file, []).unwrap();
+    assert_eq!(youtube_target(&root, id).unwrap(), Some(file.clone()));
+    assert_eq!(youtube_target(&root, "abcdefghijk").unwrap(), None);
+    std::fs::remove_file(file).unwrap();
+    assert_eq!(youtube_target(&root, id).unwrap(), None);
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[cfg(all(test, feature = "native-video"))]

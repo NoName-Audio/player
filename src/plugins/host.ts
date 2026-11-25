@@ -158,6 +158,9 @@ export function createPluginHost(options: HostOptions) {
   });
   onMounted(async () => {
     try {
+      unlisteners.push(await listen<{ pluginId: string; providerId: string; query: string }>('plugin-shared-search', ({ payload }) => {
+        options.openSharedSearch(payload.pluginId, payload.providerId, payload.query);
+      }));
       unlisteners.push(await listen<NativeHostCall>('plugin-host-call', async ({ payload }) => {
         const info = plugins.value.find(p => p.manifest.id === payload.pluginId && p.enabled && p.generation === payload.generation);
         let result: unknown = null; let error: string | null = null;

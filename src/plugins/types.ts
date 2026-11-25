@@ -74,5 +74,6 @@ export interface HostOptions {
   playSource(plugin: PluginInfo, source: PluginSource): Promise<void>;
   adopt(pluginId: string, resourceId: string, track: Track): Promise<void>;
   navigate(route: string, context?: Record<string, unknown>): void;
+  openSharedSearch(pluginId: string, providerId: string, query: string): void;
 }
 export interface UiContribution extends Contribution { pluginId: string; key: string }

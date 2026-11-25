@@ -7,8 +7,8 @@ import CoverImage from '../../components/CoverImage.vue';
 import { coverUrl } from '../../utils/covers';
 import SettingsToggle from '../../components/SettingsToggle.vue';
 import PluginStatus from './PluginStatus.vue';
-defineProps<{ node: UiNode; manifest?: PluginManifest; fields: Record<string, string | boolean>; busy: boolean; pendingButton?: string; path?: string }>();
-const emit = defineEmits<{ action: [action: string, payload?: Record<string, unknown>, button?: string] }>();
+defineProps<{ node: UiNode; manifest?: PluginManifest; fields: Record<string, string | boolean>; busy: boolean; pendingButton?: string; path?: string; selection?: ReadonlySet<string>; unavailable?: ReadonlySet<string> }>();
+const emit = defineEmits<{ action: [action: string, payload?: Record<string, unknown>, button?: string]; select: [id: string, checked: boolean] }>();
 const resultButton = (path: string | undefined, resourceId: string, action: string) => JSON.stringify([path || '', resourceId, action]);
 const openDownload = ref<string>();
 const formats = [
@@ -47,6 +47,7 @@ onUnmounted(() => window.removeEventListener('click', closeDownload));
   <div v-else-if="node.type === 'toggle' && node.action" class="plugin-field plugin-toggle"><span>{{ node.label }}</span><SettingsToggle :model-value="Boolean(node.value)" :label="node.label || node.action" :disabled="busy || node.disabled" :aria-busy="busy && pendingButton === `${path || ''}/toggle`" @update:model-value="value => emit('action', node.action!, { ...node.payload, value }, `${path || ''}/toggle`)" /></div>
   <div v-else-if="node.type === 'results'" class="plugin-results">
     <div v-for="item in node.items || []" :key="item.id" class="plugin-result">
+      <input v-if="selection" class="form-checkbox" type="checkbox" :aria-label="`Select ${item.title}`" :checked="selection.has(item.id)" :disabled="busy || unavailable?.has(item.id)" @change="emit('select', item.id, ($event.target as HTMLInputElement).checked)" />
       <CoverImage class="track-cover-sm" :src="coverUrl(item.coverHash, 'small')" :loading="item.coverLoading" />
       <div class="plugin-result-copy"><strong>{{ item.title }}</strong><span>{{ item.subtitle }}</span><span v-if="item.status">{{ item.status }}</span></div>
       <div class="plugin-result-actions">

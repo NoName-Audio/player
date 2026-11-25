@@ -658,7 +658,16 @@ pub async fn dispatch_share(app: &tauri::AppHandle, args: Value, staged: Option<
     for plugin in plugins {
         let id = plugin.manifest.id;
         match native_call(app.clone(), id.clone(), plugin.generation, "share".into(), args.clone(), file.clone()).await {
-            Ok(reply) if reply["handled"].as_bool() == Some(true) => return true,
+            Ok(reply) if reply["handled"].as_bool() == Some(true) => {
+                if staged.is_none() && args["url"].is_string() {
+                    if let Some(query) = reply["searchQuery"].as_str() {
+                        if let Some(provider) = plugin.manifest.contributions.iter().find(|c| c.kind == "search") {
+                            let _ = app.emit("plugin-shared-search", json!({"pluginId": id, "providerId": provider.id, "query": query}));
+                        }
+                    }
+                }
+                return true;
+            }
             Err(error) => {
                 tracing::warn!(%id, %error, "Android share handler failed");
                 let _ = app.emit("plugin-runtime-error", json!({"pluginId":id,"generation":plugin.generation,"error":error}));

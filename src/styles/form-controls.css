@@ -24,6 +24,7 @@
 .form-input:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 3px; }
 
 .check-option { display: flex; align-items: center; gap: 8px; color: var(--color-text-muted); font-size: var(--fs-body-sm); cursor: pointer; }
+.form-checkbox,
 .check-option input {
   appearance: none;
   -webkit-appearance: none;
@@ -33,10 +34,14 @@
   border: 1.5px solid var(--color-border-strong); border-radius: 4px;
   background: transparent; cursor: pointer;
 }
+.form-checkbox:checked,
 .check-option input:checked { background: var(--color-accent); border-color: var(--color-accent); }
+.form-checkbox:checked::after,
 .check-option input:checked::after {
   content: ''; width: 4px; height: 8px; margin-top: -1px;
   border: solid var(--color-on-accent); border-width: 0 2px 2px 0;
   transform: rotate(45deg);
 }
+.form-checkbox:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.form-checkbox:disabled { opacity: .45; cursor: not-allowed; }
 .check-option input:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }

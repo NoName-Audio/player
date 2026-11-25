@@ -223,6 +223,22 @@ pub async fn plugins_set_enabled(
 }
 
 #[tauri::command]
+pub async fn youtube_library_status(ids: Vec<String>, app: tauri::AppHandle) -> Result<Vec<String>, String> {
+    if ids.len() > 120 { return Err("Too many YouTube video IDs".into()); }
+    tauri::async_runtime::spawn_blocking(move || {
+        let library = app.state::<crate::library::LibraryState>();
+        let root = library.data_dir();
+        let mut present = Vec::new();
+        for id in ids {
+            if import_media::youtube_target(root, &id)?.is_some() {
+                present.push(id);
+            }
+        }
+        Ok(present)
+    }).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 pub async fn plugin_call(
     plugin_id: String,
     generation: u64,
