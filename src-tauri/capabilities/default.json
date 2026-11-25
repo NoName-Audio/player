@@ -6,7 +6,6 @@
   "permissions": [
     "core:default",
     "core:window:allow-set-theme",
-    "dialog:allow-message",
     "opener:default"
   ]
 }
