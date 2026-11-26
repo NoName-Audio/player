@@ -542,6 +542,12 @@ If you want the full descriptive architecture document, read [DESIGN.md](./DESIG
 See [the plugin guide](https://github.com/NoName-Audio/player-plugins/blob/main/docs/README.md) for package installation, the SDK,
 UI contributions, native capabilities and development workflows.
 
+To enable the playback footer heart for a plugin preview, declare a `preview-like`
+contribution. Player dispatches its ID as an `action` with `payload.resourceId`
+and `payload.sourceToken` scoped to that plugin. The handler imports the preview
+and returns the indexed track; Player adopts the track and marks it as liked.
+Without the contribution, the heart is disabled on that plugin's previews.
+
 Installed package payloads are immutable, fingerprint-addressed files under the
 plugin store's `packages/` directory. The registry stores only package references,
 activation generations, settings, and secret-key names, so granting permissions or

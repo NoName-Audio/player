@@ -1,7 +1,7 @@
 //! Drag-and-drop import of audio files into the library.
 //!
-//! Dropped files/folders are copied (never moved) into `data_dir` following
-//! the same path convention as Soulseek downloads:
+//! Dropped files/folders are copied (never moved) into `data_dir` using
+//! metadata-based paths:
 //! `Artist/Album/filename`, `Artist/filename`, or `filename` when tags are
 //! missing. Copied files are indexed immediately.
 

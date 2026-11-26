@@ -15,25 +15,32 @@ let refreshSequence = 0;
 const actionBusy = ref(false); const pendingButton = ref<string>();
 let sequence = 0; let disposed = false;
 const currentCursor = ref<string | null>(null); const nextCursor = ref<string | null>(null); const previousCursors = ref<Array<string | null>>([]);
-const playlist = computed(() => props.contribution.pluginId === 'player.youtube' && /^(https?:\/\/)(?:(?:www|m|music)\.)?youtube\.com\/(?:playlist|watch)\?[^#]*\blist=/i.test(submitted.value));
+const batch = ref<SearchResult['batch']>();
+const playlist = computed(() => Boolean(batch.value));
+function libraryStatus(ids: string[]) {
+  const plugin = host.plugins.value.find(p => p.manifest.id === props.contribution.pluginId && p.enabled);
+  if (!plugin) throw new Error('Plugin is not enabled');
+  return invoke<string[]>('plugin_call', { pluginId: plugin.manifest.id, generation: plugin.generation, method: 'library.status', args: { ids } });
+}
 const selected = ref(new Set<string>());
 const present = ref(new Set<string>());
 const checking = ref(false);
 const statusError = ref('');
 let statusRequest = 0;
 const rows = computed(() => playlist.value ? items.value.map(item => present.value.has(item.id) ? {
-  ...item, status: 'Already in library', actions: item.actions?.filter(action => action.id !== 'save'),
+  ...item, status: 'Already in library', actions: item.actions?.filter(action => action.id !== batch.value?.action),
 } : item) : items.value);
-const available = computed(() => rows.value.filter(item => !present.value.has(item.id) && item.actions?.some(action => action.id === 'save' && action.downloadOptions && !action.disabled)));
+const available = computed(() => rows.value.filter(item => !present.value.has(item.id) && item.actions?.some(action => action.id === batch.value?.action && action.downloadOptions && !action.disabled)));
 const unavailable = computed(() => new Set(rows.value.filter(item => !available.value.includes(item)).map(item => item.id)));
-const ids = computed(() => playlist.value ? items.value.map(item => item.id).join(',') : '');
+const ids = computed(() => JSON.stringify(batch.value ? items.value.map(item => item.id) : []));
 async function checkLibrary() {
   const request = ++statusRequest;
-  checking.value = Boolean(ids.value);
+  const requested: string[] = JSON.parse(ids.value);
+  checking.value = requested.length > 0;
   statusError.value = '';
-  if (!ids.value) { present.value.clear(); return; }
+  if (!requested.length) { present.value.clear(); return; }
   try {
-    const found = await invoke<string[]>('youtube_library_status', { ids: ids.value.split(',') });
+    const found = await libraryStatus(requested);
     if (request !== statusRequest || disposed) return;
     present.value = new Set(found);
     for (const id of found) selected.value.delete(id);
@@ -44,13 +51,14 @@ async function checkLibrary() {
   }
 }
 watch(ids, () => { selected.value.clear(); void checkLibrary(); });
-const unlisten = listen('library-changed', () => { if (ids.value) void checkLibrary(); });
+const unlisten = listen('library-changed', () => { if (batch.value) void checkLibrary(); });
 onUnmounted(() => { void unlisten.then(stop => stop(), () => {}); });
 function select(id: string, checked: boolean) {
   if (checked) selected.value.add(id); else selected.value.delete(id);
 }
 async function downloadSelected() {
-  if (actionBusy.value || checking.value || statusError.value) return;
+  const operation = batch.value;
+  if (!operation || actionBusy.value || checking.value || statusError.value) return;
   const seq = sequence;
   const candidates = available.value.filter(item => selected.value.has(item.id));
   actionBusy.value = true;
@@ -60,22 +68,22 @@ async function downloadSelected() {
     for (const item of candidates) {
       if (seq !== sequence || disposed) break;
       try {
-        const found = await invoke<string[]>('youtube_library_status', { ids: [item.id] });
+        const found = await libraryStatus([item.id]);
         if (seq !== sequence || disposed) break;
         if (found.length) present.value.add(item.id);
         else {
-          await host.call(props.contribution.pluginId, 'action', { action: 'save', payload: { resourceId: item.id, video: false, saveData: false } });
+          await host.call(props.contribution.pluginId, 'action', { action: operation.action, payload: { ...operation.payload, resourceId: item.id } });
           // Desktop acknowledges the start; Android returns after import.
           const deadline = Date.now() + 10 * 60_000;
           while (seq === sequence && !disposed) {
-            const saved = await invoke<string[]>('youtube_library_status', { ids: [item.id] });
+            const saved = await libraryStatus([item.id]);
             if (seq !== sequence || disposed) break;
             if (saved.length) { present.value.add(item.id); break; }
             const updated = await host.call(props.contribution.pluginId, 'renderSearch', { ids: [item.id], searchId: searchId.value }) as SearchRefresh | null;
             const row = (Array.isArray(updated) ? updated : updated?.items)?.find(result => result.id === item.id);
-            if (!row?.actions?.some(action => action.id === 'save' && action.downloadOptions === false)) {
+            if (!row?.actions?.some(action => action.id === operation.action && action.downloadOptions === false)) {
               // Import could finish between the disk lookup and the status read.
-              if ((await invoke<string[]>('youtube_library_status', { ids: [item.id] })).length) break;
+              if ((await libraryStatus([item.id])).length) break;
               throw new Error(row?.status || 'Download did not reach the library');
             }
             if (Date.now() >= deadline) throw new Error('Still downloading; check the result before retrying');
@@ -92,10 +100,11 @@ async function search(cursor: string | null = null, direction: 'new' | 'next' | 
   const query = props.query.trim(); if (!query || loading.value || providerPending.value || actionBusy.value) return;
   loadingDirection.value = direction;
   const seq = ++sequence; refreshSequence++; providerPending.value = false; loading.value = true; error.value = ''; submitted.value = query;
-  searchId.value = undefined; items.value = [];
+  searchId.value = undefined; items.value = []; batch.value = undefined;
   try {
     const result = await host.call(props.contribution.pluginId, 'search', { providerId: props.contribution.id, query, cursor, limit: 120 }) as SearchResult;
     if (seq === sequence && !disposed) {
+      batch.value = result.batch;
       items.value = validateUiNode({ type: 'results', items: result.items }).items || [];
       providerPending.value = result.pending === true;
       searchId.value = result.searchId; error.value = result.error || '';
@@ -149,7 +158,7 @@ onUnmounted(() => { disposed = true; sequence++; });
     <p v-else-if="!loading && !providerPending && !items.length">No matches for “{{ submitted }}”.</p>
     <div v-if="playlist && items.length" class="plugin-search-pages">
       <button class="control-button" :disabled="checking || Boolean(statusError) || actionBusy || !available.length" @click="selected = new Set(available.map(item => item.id))">Select available</button>
-      <button class="control-button" :disabled="checking || Boolean(statusError) || actionBusy || !available.some(item => selected.has(item.id))" @click="downloadSelected">Download selected (audio)</button>
+      <button class="control-button" :disabled="checking || Boolean(statusError) || actionBusy || !available.some(item => selected.has(item.id))" @click="downloadSelected">{{ batch?.label }}</button>
     </div>
     <p v-if="statusError" role="alert">Could not check library: {{ statusError }} <button class="control-button" @click="checkLibrary">Retry</button></p>
     <PluginTree :node="{ type: 'results', items: rows }" :fields="{}" :busy="loading || actionBusy || checking || Boolean(statusError)" :pending-button="pendingButton" :selection="playlist ? selected : undefined" :unavailable="unavailable" @action="action" @select="select" />

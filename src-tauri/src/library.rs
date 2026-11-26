@@ -50,6 +50,11 @@ const INTERNAL_LIBRARY_DIRECTORIES: &[&str] = &[
     ".covers",
     ".player-transactions",
     ".youtube-imports",
+];
+
+// Compatibility: older Player versions left these caches in the library root.
+// Keep them out of scans and prune any previously indexed cache entries.
+const LEGACY_LIBRARY_DIRECTORIES: &[&str] = &[
     ".soulseek-temp",
     ".soulseek-cover-cache",
     ".soulseek-preview-cache",
@@ -148,12 +153,6 @@ pub struct DeviceSettings {
     pub emoji: String,
     pub device_name: String,
     pub sync_enabled: bool,
-    #[serde(skip_serializing)]
-    pub soulseek_enabled: bool,
-    #[serde(skip_serializing)]
-    pub soulseek_username: String,
-    #[serde(skip_serializing)]
-    pub soulseek_password: String,
     pub normalize_volume: bool,
 }
 
@@ -552,73 +551,39 @@ impl LibraryState {
 
     pub fn get_device_settings(&self) -> Result<DeviceSettings, BoxError> {
         let conn = self.conn.lock().unwrap();
-        let existing: Result<(String, String, i64, i64, String, String, i64), _> = conn.query_row(
+        let existing: Result<(String, String, i64, i64), _> = conn.query_row(
             "SELECT emoji,
                     COALESCE(device_name, ''),
                     COALESCE(sync_enabled, 0),
-                    COALESCE(soulseek_enabled, 0),
-                    COALESCE(soulseek_username, ''),
-                    COALESCE(soulseek_password, ''),
                     COALESCE(normalize_volume, 1)
                FROM device_config
               WHERE id = 1",
             [],
-            |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                    row.get(5)?,
-                    row.get(6)?,
-                ))
-            },
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         );
 
         match existing {
-            Ok((
-                emoji,
-                device_name,
-                sync_enabled,
-                soulseek_enabled,
-                soulseek_username,
-                soulseek_password,
-                normalize_volume,
-            )) => Ok(DeviceSettings {
+            Ok((emoji, device_name, sync_enabled, normalize_volume)) => Ok(DeviceSettings {
                 emoji,
                 device_name,
                 sync_enabled: sync_enabled != 0,
-                soulseek_enabled: soulseek_enabled != 0,
-                soulseek_username,
-                soulseek_password,
                 normalize_volume: normalize_volume != 0,
             }),
-            Err(_) => {
+            Err(rusqlite::Error::QueryReturnedNoRows) => {
                 let emoji = random_emoji();
                 let device_name = whoami::devicename().trim().to_string();
                 conn.execute(
-                    "INSERT OR REPLACE INTO device_config (
-                        id,
-                        emoji,
-                        device_name,
-                        sync_enabled,
-                        soulseek_enabled,
-                        soulseek_username,
-                        soulseek_password
-                    ) VALUES (1, ?1, ?2, 0, 0, '', '')",
+                    "INSERT INTO device_config (id, emoji, device_name) VALUES (1, ?1, ?2)",
                     params![&emoji, &device_name],
                 )?;
                 Ok(DeviceSettings {
                     emoji,
                     device_name,
                     sync_enabled: false,
-                    soulseek_enabled: false,
-                    soulseek_username: String::new(),
-                    soulseek_password: String::new(),
                     normalize_volume: true,
                 })
             }
+            Err(err) => Err(err.into()),
         }
     }
 
@@ -627,30 +592,20 @@ impl LibraryState {
         emoji: &str,
         device_name: &str,
         sync_enabled: bool,
-        soulseek_enabled: bool,
-        soulseek_username: &str,
-        soulseek_password: &str,
     ) -> Result<(), BoxError> {
         let conn = self.conn.lock().unwrap();
+        // Update in place so legacy columns on migrated databases remain untouched.
         conn.execute(
-            "INSERT OR REPLACE INTO device_config (
-                id,
-                emoji,
-                device_name,
-                sync_enabled,
-                soulseek_enabled,
-                soulseek_username,
-                soulseek_password,
-                normalize_volume
-            ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6,
-                COALESCE((SELECT normalize_volume FROM device_config WHERE id = 1), 1))",
+            "INSERT INTO device_config (id, emoji, device_name, sync_enabled)
+             VALUES (1, ?1, ?2, ?3)
+             ON CONFLICT(id) DO UPDATE SET
+                emoji = excluded.emoji,
+                device_name = excluded.device_name,
+                sync_enabled = excluded.sync_enabled",
             params![
                 emoji,
                 device_name,
                 if sync_enabled { 1 } else { 0 },
-                if soulseek_enabled { 1 } else { 0 },
-                soulseek_username.trim(),
-                soulseek_password,
             ],
         )?;
         Ok(())
@@ -662,14 +617,7 @@ impl LibraryState {
 
     pub fn set_device_emoji(&self, emoji: &str) -> Result<(), BoxError> {
         let current = self.get_device_settings()?;
-        self.set_device_settings(
-            emoji,
-            &current.device_name,
-            current.sync_enabled,
-            current.soulseek_enabled,
-            &current.soulseek_username,
-            &current.soulseek_password,
-        )
+        self.set_device_settings(emoji, &current.device_name, current.sync_enabled)
     }
 }
 
@@ -968,11 +916,17 @@ fn is_internal_library_path(data_dir: &Path, path: &Path) -> bool {
         .components()
         .next()
         .and_then(|component| component.as_os_str().to_str())
-        .is_some_and(|name| INTERNAL_LIBRARY_DIRECTORIES.contains(&name))
+        .is_some_and(|name| {
+            INTERNAL_LIBRARY_DIRECTORIES.contains(&name)
+                || LEGACY_LIBRARY_DIRECTORIES.contains(&name)
+        })
 }
 
 fn purge_internal_library_rows(conn: &Connection) -> Result<(), BoxError> {
-    for directory in INTERNAL_LIBRARY_DIRECTORIES {
+    for directory in INTERNAL_LIBRARY_DIRECTORIES
+        .iter()
+        .chain(LEGACY_LIBRARY_DIRECTORIES)
+    {
         let like_pattern = format!("{directory}/%");
         delete_tracks_by_path_or_like(conn, directory, &like_pattern)?;
     }
@@ -1081,10 +1035,7 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             id        INTEGER PRIMARY KEY CHECK(id=1),
             emoji     TEXT NOT NULL DEFAULT '🎵',
             device_name TEXT NOT NULL DEFAULT '',
-            sync_enabled INTEGER NOT NULL DEFAULT 0,
-            soulseek_enabled INTEGER NOT NULL DEFAULT 0,
-            soulseek_username TEXT NOT NULL DEFAULT '',
-            soulseek_password TEXT NOT NULL DEFAULT ''
+            sync_enabled INTEGER NOT NULL DEFAULT 0
         );
         CREATE TABLE IF NOT EXISTS playlists (
             id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1106,15 +1057,6 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
         .execute_batch("ALTER TABLE device_config ADD COLUMN device_name TEXT NOT NULL DEFAULT ''");
     let _ = conn.execute_batch(
         "ALTER TABLE device_config ADD COLUMN sync_enabled INTEGER NOT NULL DEFAULT 0",
-    );
-    let _ = conn.execute_batch(
-        "ALTER TABLE device_config ADD COLUMN soulseek_enabled INTEGER NOT NULL DEFAULT 0",
-    );
-    let _ = conn.execute_batch(
-        "ALTER TABLE device_config ADD COLUMN soulseek_username TEXT NOT NULL DEFAULT ''",
-    );
-    let _ = conn.execute_batch(
-        "ALTER TABLE device_config ADD COLUMN soulseek_password TEXT NOT NULL DEFAULT ''",
     );
     let _ =
         conn.execute_batch("ALTER TABLE playlists ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0");
@@ -4089,9 +4031,6 @@ pub fn set_device_settings(
     emoji: String,
     device_name: String,
     sync_enabled: Option<bool>,
-    soulseek_enabled: Option<bool>,
-    soulseek_username: Option<String>,
-    soulseek_password: Option<String>,
     state: tauri::State<'_, LibraryState>,
 ) -> Result<(), String> {
     let current = state.get_device_settings().map_err(|e| e.to_string())?;
@@ -4100,13 +4039,6 @@ pub fn set_device_settings(
             &emoji,
             device_name.trim(),
             sync_enabled.unwrap_or(current.sync_enabled),
-            soulseek_enabled.unwrap_or(current.soulseek_enabled),
-            soulseek_username
-                .as_deref()
-                .unwrap_or(&current.soulseek_username),
-            soulseek_password
-                .as_deref()
-                .unwrap_or(&current.soulseek_password),
         )
         .map_err(|e| e.to_string())
 }

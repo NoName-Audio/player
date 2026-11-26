@@ -2936,21 +2936,28 @@ async function pauseFromMediaControl() {
 }
 
 const savingFooterPreview = ref(false);
+const footerPreviewAction = computed(() => {
+  const track = nowPlaying.value;
+  if (!track || track.id > 0) return;
+  return pluginPreviewLikes.value.find(action => action.pluginId === track.plugin_source?.resource.pluginId);
+});
 async function toggleFooterLike() {
   const track = nowPlaying.value;
   if (!track || savingFooterPreview.value) return;
   if (track.id > 0) return toggleLike(track);
   const source = track.plugin_source;
-  if (source?.resource.pluginId !== 'player.youtube') return;
+  const action = footerPreviewAction.value;
+  if (!source || !action) return;
   savingFooterPreview.value = true;
   try {
-    const { sourceToken, generation } = source.sourceToken ? source : await invoke<{ sourceToken: string; generation: number }>('plugin_current_source', { pluginId: 'player.youtube', resourceId: source.resource.resourceId });
-    const imported = await invoke<Track | null>('plugin_call', { pluginId: 'player.youtube', generation, method: 'library.import', args: { sourceToken } });
-    if (!imported) throw new Error('Could not index the saved track');
-    adoptPluginTrack('player.youtube', source.resource.resourceId, imported);
+    const { pluginId, resourceId } = source.resource;
+    const { sourceToken } = source.sourceToken ? source : await invoke<{ sourceToken: string }>('plugin_current_source', { pluginId, resourceId });
+    const imported = await pluginHost.call(pluginId, 'action', { action: action.id, payload: { sourceToken, resourceId } }) as Track | null;
+    if (!imported || !Number.isSafeInteger(imported.id) || imported.id <= 0) throw new Error('Plugin did not return a saved track');
+    adoptPluginTrack(pluginId, resourceId, imported);
     if (!imported.is_liked) await toggleLike(imported);
   } catch (error) {
-    alert(`Could not save YouTube preview.\n${String(error)}`);
+    alert(`Could not like preview.\n${String(error)}`);
   } finally {
     savingFooterPreview.value = false;
   }
@@ -4047,22 +4054,27 @@ function navigateSearchTabs(event: KeyboardEvent) {
 }
 const pluginTrackActions = pluginHost.contributions('track-action');
 const pluginWidgets = pluginHost.contributions('player-widget');
+const pluginPreviewLikes = pluginHost.contributions('preview-like');
 const pluginDownloads = computed(() => pluginHost.plugins.value.flatMap(plugin => {
   const progress = pluginHost.downloadProgress.value[plugin.manifest.id];
   return plugin.enabled && progress?.generation === plugin.generation ? [{ manifest: plugin.manifest, progress }] : [];
 }));
 const activePluginPage = computed(() => pluginPages.value.find(page => activeNav.value === `plugins/${page.pluginId}/${page.id}`));
-const youtubeSignInPage = computed(() => activePluginPage.value?.pluginId === 'player.youtube' && activePluginPage.value.id === 'sign-in');
-const youtubeSignInSlot = ref<HTMLElement>();
-const youtubeSignInError = ref('');
-const youtubeSignInSaving = ref(false);
-watch(youtubeSignInSlot, (slot, _, onCleanup) => {
-  if (!slot) return;
-  youtubeSignInError.value = '';
+const activeNativePage = computed(() => {
+  const page = activePluginPage.value;
+  return page?.nativePage ? { key: page.key, pluginId: page.pluginId, ...page.nativePage } : undefined;
+});
+const nativePageSlot = ref<HTMLElement>();
+const nativePageError = ref('');
+const nativePageSubmitting = ref(false);
+watch([activeNativePage, nativePageSlot], ([page, slot], _, onCleanup) => {
+  nativePageError.value = '';
+  nativePageSubmitting.value = false;
+  if (!page || !slot) return;
   let frame = 0;
   let previous = '';
   let stopped = false;
-  const call = (action: string, payload = {}) => pluginHost.call('player.youtube', 'action', { action, payload });
+  const call = (action: string, payload?: Record<string, number>) => pluginHost.call(page.pluginId, 'action', { action, payload });
   const sync = async () => {
     const rect = slot.getBoundingClientRect();
     const scale = devicePixelRatio;
@@ -4072,26 +4084,38 @@ watch(youtubeSignInSlot, (slot, _, onCleanup) => {
     try {
       if (previous !== key) {
         previous = key;
-        await call(visible ? 'sign-in-position' : 'sign-in-hide', payload);
+        await call(visible ? page.positionAction : page.hideAction, visible ? payload : undefined);
       }
-    } catch (error) { if (!stopped) youtubeSignInError.value = String(error); }
+    } catch (error) { if (!stopped) nativePageError.value = String(error); }
     if (!stopped) frame = requestAnimationFrame(sync);
   };
   frame = requestAnimationFrame(sync);
   onCleanup(() => {
     stopped = true;
     cancelAnimationFrame(frame);
-    void call('sign-in-close').catch(() => {});
+    void call(page.closeAction).catch(() => {});
   });
 }, { flush: 'post' });
-async function saveYoutubeSignIn() {
-  youtubeSignInSaving.value = true;
-  youtubeSignInError.value = '';
+async function submitNativePage() {
+  const page = activeNativePage.value;
+  const slot = nativePageSlot.value;
+  if (!page || !slot || nativePageSubmitting.value) return;
+  const stillActive = () => activeNativePage.value === page && nativePageSlot.value === slot;
+  nativePageSubmitting.value = true;
+  nativePageError.value = '';
   try {
-    await pluginHost.call('player.youtube', 'action', { action: 'sign-in-save' });
-    if (youtubeSignInPage.value) openSettings('plugin:player.youtube/authorization');
-  } catch (error) { youtubeSignInError.value = String(error); }
-  finally { youtubeSignInSaving.value = false; }
+    const result = await pluginHost.call(page.pluginId, 'action', { action: page.submitAction });
+    if (!stillActive()) return;
+    const settingsId = (result as { settingsId?: unknown } | null)?.settingsId;
+    if (settingsId === undefined) return;
+    const destination = pluginHost.contributions('settings').value.find(c => c.pluginId === page.pluginId && c.id === settingsId);
+    if (!destination) throw new Error('Plugin returned an unregistered settings page');
+    openSettings(`plugin:${destination.key}`);
+  } catch (error) {
+    if (stillActive()) nativePageError.value = String(error);
+  } finally {
+    if (stillActive()) nativePageSubmitting.value = false;
+  }
 }
 async function runPluginTrackAction(action: UiContribution) {
   const track = trackContextMenu.value?.track; trackContextMenu.value = null;
@@ -4449,8 +4473,8 @@ onUnmounted(() => {
           <button v-if="activeNav === 'home'" class="control-button control-button-compact import-files-action" @click="uploadFiles"><AppIcon name="folder" /> Add files</button>
           <div v-else id="debug-sql-header-actions" />
         </template>
-        <template v-else-if="youtubeSignInPage" #actions>
-          <button class="control-button control-button-compact" :disabled="youtubeSignInSaving" @click="saveYoutubeSignIn">Use this session</button>
+        <template v-else-if="activeNativePage" #actions>
+          <button v-if="activeNativePage" class="control-button control-button-compact" :disabled="nativePageSubmitting" @click="submitNativePage">{{ activeNativePage.submitLabel }}</button>
         </template>
         <template v-if="activeNav === 'playlists' && playlistTab === 'smart' && editingSP" #title>
           <input v-model="editingSP.name" class="page-title-input" aria-label="Playlist name" placeholder="Playlist name" @input="saveSP()" @click.stop />
@@ -4709,9 +4733,9 @@ onUnmounted(() => {
           </section>
         </template>
 
-        <div v-else-if="youtubeSignInPage" style="display: flex; flex-direction: column; height: 100%">
-          <p v-if="youtubeSignInError" role="alert">{{ youtubeSignInError }}</p>
-          <div ref="youtubeSignInSlot" style="flex: 1; min-height: 0" />
+        <div v-else-if="activeNativePage" :key="activeNativePage.key" style="display: flex; flex-direction: column; height: 100%">
+          <p v-if="nativePageError" role="alert">{{ nativePageError }}</p>
+          <div ref="nativePageSlot" style="flex: 1; min-height: 0" />
         </div>
         <template v-else-if="activePluginPage">
           <PluginPanel :key="activePluginPage.key" :plugin-id="activePluginPage.pluginId" :view-id="activePluginPage.id" :context="pluginPageContext" />
@@ -5615,6 +5639,7 @@ onUnmounted(() => {
       :spectrum-active="appearance.footerSpectrum && spectrumActive"
       :is-liked="nowPlaying?.is_liked ?? false"
       :like-pending="savingFooterPreview || (!!nowPlaying && pendingLikes.has(nowPlaying.id))"
+      :can-like-preview="!!footerPreviewAction"
       @toggle-like="toggleFooterLike"
       v-model:is-shuffled="isShuffled"
       v-model:repeat-mode="repeatMode"

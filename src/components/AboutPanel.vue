@@ -98,7 +98,7 @@ function openNoteLink(event: MouseEvent) {
       <div class="app-identity">
         <div class="app-summary">
           <img class="app-mark" :src="appIconUrl" alt="" width="64" height="64" />
-          <div><h3>Player</h3><p>Local-first music player with native playback, smart playlists, Soulseek search, and LAN sync.</p></div>
+          <div><h3>Player</h3><p>Local-first music player with native playback, smart playlists, LAN sync, and optional plugins.</p></div>
         </div>
         <button v-if="info?.release_repo" class="control-button text-link repository-link" @click="emit('openRepository')">GitHub repository <AppIcon name="external-link" /></button>
       </div>

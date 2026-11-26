@@ -1,9 +1,14 @@
 import type { Track } from '../types';
 export interface Contribution {
-  id: string; kind: 'page' | 'settings' | 'search' | 'track-action' | 'player-widget' | 'share-handler';
+  id: string; kind: 'page' | 'settings' | 'search' | 'track-action' | 'player-widget' | 'share-handler' | 'preview-like';
   label: string; description: string; icon?: string; order: number; slot?: 'player.actions' | 'player.status';
   /** Pages appear in the sidebar by default; false keeps only their route. */
   showInMenu?: boolean;
+  /** Native overlay lifecycle and submit actions for an Android page. */
+  nativePage?: {
+    positionAction: string; hideAction: string; closeAction: string;
+    submitAction: string; submitLabel: string;
+  };
 }
 export interface Attachment {
   id: string; target: string; position: 'before' | 'after'; view: string; order: number;
@@ -59,7 +64,7 @@ export interface SearchItem {
   progress?: number | null;
 }
 /** Async providers publish completion through renderSearch after a host revision. */
-export interface SearchResult { items: SearchItem[]; nextCursor: string | null; pending?: boolean; searchId?: string; error?: string }
+export interface SearchResult { items: SearchItem[]; nextCursor: string | null; pending?: boolean; searchId?: string; error?: string; batch?: { action: string; label: string; payload?: Record<string, unknown> } }
 export type SearchRefresh = SearchItem[] | { items: SearchItem[]; pending?: boolean; searchId?: string; error?: string };
 export interface UiNode {
   type: 'group' | 'text' | 'input' | 'button' | 'toggle' | 'results' | 'status' | 'account';

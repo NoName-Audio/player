@@ -156,6 +156,18 @@ pub struct Contribution {
     pub slot: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub show_in_menu: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_page: Option<NativePage>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NativePage {
+    pub position_action: String,
+    pub hide_action: String,
+    pub close_action: String,
+    pub submit_action: String,
+    pub submit_label: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -527,6 +539,7 @@ impl Manifest {
                 "settings",
                 "search",
                 "track-action",
+                "preview-like",
                 "player-widget",
                 "share-handler",
             ]
@@ -544,6 +557,24 @@ impl Manifest {
             }
             if c.show_in_menu.is_some() && c.kind != "page" {
                 return Err("showInMenu is only valid for page contributions".into());
+            }
+            if let Some(page) = &c.native_page {
+                if c.kind != "page" || m.android_native.is_none() {
+                    return Err("nativePage requires an Android native page contribution".into());
+                }
+                if ![
+                    &page.position_action,
+                    &page.hide_action,
+                    &page.close_action,
+                    &page.submit_action,
+                ]
+                .into_iter()
+                .all(|id| valid_local_id(id))
+                    || page.submit_label.trim().is_empty()
+                    || page.submit_label.len() > 100
+                {
+                    return Err("Invalid nativePage actions or submit label".into());
+                }
             }
         }
         if m.attachments.len() > 32 {
@@ -819,6 +850,7 @@ mod tests {
             order: 0,
             slot: None,
             show_in_menu: None,
+            native_page: None,
         };
         p.manifest.contributions = vec![c.clone(), c];
         assert!(p.validate().is_err());

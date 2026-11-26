@@ -2832,14 +2832,7 @@ pub fn sync_set_enabled(
     ensure_http_server_started(&state, &library, &app);
     let current = library.get_device_settings().map_err(|e| e.to_string())?;
     library
-        .set_device_settings(
-            &current.emoji,
-            &current.device_name,
-            enabled,
-            current.soulseek_enabled,
-            &current.soulseek_username,
-            &current.soulseek_password,
-        )
+        .set_device_settings(&current.emoji, &current.device_name, enabled)
         .map_err(|e| e.to_string())?;
     let mut inner = state.inner.lock().unwrap();
     inner.enabled = enabled;
