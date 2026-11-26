@@ -45,7 +45,7 @@ pub(super) fn youtube_target(root: &Path, id: &str) -> Result<Option<std::path::
     Ok(None)
 }
 
-pub(super) fn save_youtube(root: &Path, source: &Path, resource: &ResourceIdentity) -> Result<std::path::PathBuf, String> {
+pub(super) fn save_youtube(root: &Path, work: &Path, source: &Path, resource: &ResourceIdentity) -> Result<std::path::PathBuf, String> {
     if let Some(existing) = youtube_target(root, &resource.resource_id)? {
         return Ok(existing);
     }
@@ -71,18 +71,30 @@ pub(super) fn save_youtube(root: &Path, source: &Path, resource: &ResourceIdenti
     }
     use std::sync::atomic::{AtomicU64, Ordering};
     static NEXT_IMPORT: AtomicU64 = AtomicU64::new(0);
-    let staging = loop {
+    let create_staging = |root: &Path| loop {
         let serial = NEXT_IMPORT.fetch_add(1, Ordering::Relaxed);
-        let path = staging_root.join(format!(".import-{}-{serial}", std::process::id()));
+        let path = root.join(format!(".import-{}-{serial}", std::process::id()));
         match std::fs::create_dir(&path) {
-            Ok(()) => break path,
+            Ok(()) => break Ok(path),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(error) => return Err(format!("Could not stage YouTube import: {error}")),
         }
     };
+    let staging = create_staging(&staging_root)?;
     let temp = staging.join(format!("media.{extension}"));
-    let result = write_tags(source, &temp, extension, resource)
-        .and_then(|()| std::fs::rename(&temp, &target).map_err(|e| format!("Could not publish YouTube import: {e}")));
+    // FFmpeg needs a seekable output; remux on app-private storage and only
+    // stream the finished container to the library volume before publishing.
+    let result = (|| {
+        let private = create_staging(work)?;
+        let remuxed = private.join(format!("media.{extension}"));
+        let result = write_tags(source, &remuxed, extension, resource).and_then(|()| {
+            std::fs::copy(&remuxed, &temp).map_err(|e| format!("Could not stage completed YouTube import: {e}"))?;
+            std::fs::rename(&temp, &target).map_err(|e| format!("Could not publish YouTube import: {e}"))
+        });
+        let _ = std::fs::remove_file(&remuxed);
+        let _ = std::fs::remove_dir(&private);
+        result
+    })();
     let _ = std::fs::remove_file(&temp);
     let _ = std::fs::remove_dir(&staging);
     result.map(|()| target)
@@ -165,16 +177,16 @@ mod tests {
             title: "A title".into(), artist: "An artist".into(), album: "An album".into(),
             duration_seconds: None, cover_hash: None,
         };
-        let saved = save_youtube(&root, &input, &resource).unwrap();
+        let saved = save_youtube(&root, &root, &input, &resource).unwrap();
         let (title, artist, album, _) = crate::video::native::container_metadata(&saved).unwrap();
         assert_eq!((title.as_deref(), artist.as_deref(), album.as_deref()), (Some("A title"), Some("An artist"), Some("An album")));
         resource.title = "Changed title".into();
-        assert_eq!(save_youtube(&root, &source, &resource).unwrap(), saved);
+        assert_eq!(save_youtube(&root, &root, &source, &resource).unwrap(), saved);
         resource.resource_id = "abcdefghijk".into();
         // A previous import must not block or share the next import's staging path.
         let directory = youtube_directory(&root, &resource.resource_id).unwrap();
         std::fs::create_dir_all(directory.join(".import.partial")).unwrap();
-        let video = save_youtube(&root, &source, &resource).unwrap();
+        let video = save_youtube(&root, &root, &source, &resource).unwrap();
         let (title, _, _, _) = crate::video::native::container_metadata(&video).unwrap();
         assert_eq!(title.as_deref(), Some("Changed title"));
         std::fs::remove_dir_all(root).unwrap();

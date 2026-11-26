@@ -2935,6 +2935,27 @@ async function pauseFromMediaControl() {
   }
 }
 
+const savingFooterPreview = ref(false);
+async function toggleFooterLike() {
+  const track = nowPlaying.value;
+  if (!track || savingFooterPreview.value) return;
+  if (track.id > 0) return toggleLike(track);
+  const source = track.plugin_source;
+  if (source?.resource.pluginId !== 'player.youtube') return;
+  savingFooterPreview.value = true;
+  try {
+    const { sourceToken, generation } = source.sourceToken ? source : await invoke<{ sourceToken: string; generation: number }>('plugin_current_source', { pluginId: 'player.youtube', resourceId: source.resource.resourceId });
+    const imported = await invoke<Track | null>('plugin_call', { pluginId: 'player.youtube', generation, method: 'library.import', args: { sourceToken } });
+    if (!imported) throw new Error('Could not index the saved track');
+    adoptPluginTrack('player.youtube', source.resource.resourceId, imported);
+    if (!imported.is_liked) await toggleLike(imported);
+  } catch (error) {
+    alert(`Could not save YouTube preview.\n${String(error)}`);
+  } finally {
+    savingFooterPreview.value = false;
+  }
+}
+
 async function toggleLike(track: Track, e?: Event) {
   e?.stopPropagation();
   if (track.id <= 0 || pendingLikes.value.has(track.id)) return;
@@ -3981,9 +4002,7 @@ const pluginHost = createPluginHost({
   },
   async adopt(pluginId, resourceId, track) {
     if (!track || !Number.isSafeInteger(track.id) || track.id <= 0) throw new Error('Invalid imported track');
-    const replace = (item: Track) => item.plugin_source?.resource.pluginId === pluginId && item.plugin_source.resource.resourceId === resourceId ? { ...track } : item;
-    if (nowPlaying.value) nowPlaying.value = replace(nowPlaying.value);
-    queuePluginTracks.value = queuePluginTracks.value.map(replace); queue.value = queue.value.map(replace);
+    adoptPluginTrack(pluginId, resourceId, track);
     await loadLibrary(); await loadRecent(); syncAndroid();
   },
   navigate(route, context = {}) { pluginPageContext.value = context; activeNav.value = route; pushNavHistory({ nav: route, target: '', targetArtist: '', pluginContext: context }); showMobileNav.value = false; },
@@ -3998,6 +4017,13 @@ const pluginHost = createPluginHost({
     sharedSearchRequest.value = { key: provider.key };
   },
 });
+function adoptPluginTrack(pluginId: string, resourceId: string, track: Track) {
+  const replace = (item: Track) => item.plugin_source?.resource.pluginId === pluginId && item.plugin_source.resource.resourceId === resourceId ? track : item;
+  if (nowPlaying.value) nowPlaying.value = replace(nowPlaying.value);
+  queuePluginTracks.value = queuePluginTracks.value.map(replace);
+  queue.value = queue.value.map(replace);
+  syncAndroid();
+}
 providePluginHost(pluginHost);
 const pluginPages = pluginHost.contributions('page');
 const pluginMenuPages = computed(() => pluginPages.value.filter(page => page.showInMenu !== false));
@@ -5588,8 +5614,8 @@ onUnmounted(() => {
       :spectrum-levels="spectrumLevels"
       :spectrum-active="appearance.footerSpectrum && spectrumActive"
       :is-liked="nowPlaying?.is_liked ?? false"
-      :like-pending="!!nowPlaying && pendingLikes.has(nowPlaying.id)"
-      @toggle-like="nowPlaying && toggleLike(nowPlaying)"
+      :like-pending="savingFooterPreview || (!!nowPlaying && pendingLikes.has(nowPlaying.id))"
+      @toggle-like="toggleFooterLike"
       v-model:is-shuffled="isShuffled"
       v-model:repeat-mode="repeatMode"
       v-model:show-queue-menu="showQueueMenu"

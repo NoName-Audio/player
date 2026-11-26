@@ -472,7 +472,7 @@ pub async fn plugin_call(
                 value(track)
             } else {
                 let target = if youtube {
-                    import_media::save_youtube(library.data_dir(), &source.path, &source.resource)?
+                    import_media::save_youtube(library.data_dir(), &copy_dir, &source.path, &source.resource)?
                 } else {
                 let (artist, album) = crate::import_paths::extract_audio_metadata(&copy);
                 let target_dir = crate::import_paths::build_metadata_based_path(

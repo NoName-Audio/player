@@ -164,6 +164,7 @@ does not open a permission prompt from the background.
 - Seek, pause, resume, stop, and volume control.
 - Output device and sample rate selection.
 - Queue with shuffle, repeat, and up-next, across lists of any length.
+- Click the heart in the playback footer to save a YouTube preview to the library and mark it as liked.
 - Beat detection and real-time audio spectrum above the controls footer, shared with the detail visuals; hidden while paused, seeking, in background tabs, or with reduced motion.
 
 ### Organization

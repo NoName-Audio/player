@@ -524,7 +524,7 @@ onUnmounted(() => {
           <span ref="artistText" class="footer-marquee-text" :class="{ 'is-overflowing': artistOverflow > 1 && !reduceMotion }" :style="marqueeStyle(artistOverflow)"><ArtistLink :artist="nowPlaying?.artist" @open="emit('openArtist', $event)">{{ currentTrack.artist }}</ArtistLink></span>
         </div>
       </div>
-      <button class="icon-btn like-button" :class="{ green: isLiked }" :disabled="!nowPlaying || nowPlaying.id <= 0 || likePending" :aria-busy="likePending" :title="isLiked ? 'Unlike' : 'Like'" :aria-pressed="isLiked" @click.stop="emit('toggleLike')">
+      <button class="icon-btn like-button" :class="{ green: isLiked }" :disabled="!nowPlaying || (nowPlaying.id <= 0 && nowPlaying.plugin_source?.resource.pluginId !== 'player.youtube') || likePending" :aria-busy="likePending" :title="isLiked ? 'Unlike' : 'Like'" :aria-pressed="isLiked" @click.stop="emit('toggleLike')">
         <span class="like-glyph" :class="likeAnimation && `like-${likeAnimation}`" @animationend="likeAnimation = null"><AppIcon :name="isLiked ? 'liked' : 'like'" :size="16" /></span>
       </button>
     </div>
