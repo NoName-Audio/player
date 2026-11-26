@@ -270,7 +270,6 @@ pub fn run() {
             plugins::native::plugin_native_call,
             plugins::native::plugin_native_reply,
             plugins::plugin_call,
-            plugins::youtube_library_status,
             plugins::plugin_play_source,
             plugins::plugin_current_source,
             debug_sql::debug_execute_sql,

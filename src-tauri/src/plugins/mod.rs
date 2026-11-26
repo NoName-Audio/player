@@ -62,7 +62,7 @@ pub fn initialize(app: &tauri::AppHandle) -> Result<(), String> {
         .app_data_dir()
         .map_err(|e| e.to_string())?
         .join("plugin-system");
-    import_media::clean_staging(&root.join("staging/player.youtube"));
+    import_media::clean_legacy_download_staging(&root.join("staging/player.youtube"));
     let state = PluginState::new(root)?;
     app.manage(native::NativeRuntime::default());
     app.manage(state);
@@ -223,22 +223,6 @@ pub async fn plugins_set_enabled(
 }
 
 #[tauri::command]
-pub async fn youtube_library_status(ids: Vec<String>, app: tauri::AppHandle) -> Result<Vec<String>, String> {
-    if ids.len() > 120 { return Err("Too many YouTube video IDs".into()); }
-    tauri::async_runtime::spawn_blocking(move || {
-        let library = app.state::<crate::library::LibraryState>();
-        let root = library.data_dir();
-        let mut present = Vec::new();
-        for id in ids {
-            if import_media::youtube_target(root, &id)?.is_some() {
-                present.push(id);
-            }
-        }
-        Ok(present)
-    }).await.map_err(|e| e.to_string())?
-}
-
-#[tauri::command]
 pub async fn plugin_call(
     plugin_id: String,
     generation: u64,
@@ -252,7 +236,7 @@ pub async fn plugin_call(
         "secrets.has" | "secrets.set" | "secrets.delete" | "secrets.get" => "secrets",
         "storage.staging" => "storage",
         "media.register" | "media.state" | "media.cover" => "media.source",
-        "library.import" => "library.import",
+        "library.import" | "library.status" => "library.import",
         "library.replace" => "library.replace",
         "http.request" | "http.download" => "network.http",
         _ => return Err("METHOD_NOT_FOUND".into()),
@@ -437,6 +421,27 @@ pub async fn plugin_call(
             }
             result
         }
+        "library.status" => {
+            let ids: Vec<String> = field(&args, "ids")?;
+            if ids.len() > 120 {
+                return Err("Too many resource IDs".into());
+            }
+            let app = app.clone();
+            let caller = plugin_id.clone();
+            let present = tauri::async_runtime::spawn_blocking(move || {
+                let library = app.state::<crate::library::LibraryState>();
+                let mut present = Vec::new();
+                for id in ids {
+                    if import_media::target(library.data_dir(), &caller, &id)?.is_some() {
+                        present.push(id);
+                    }
+                }
+                Ok::<_, String>(present)
+            })
+            .await
+            .map_err(|e| e.to_string())??;
+            value(present)
+        }
         "library.import" | "library.replace" => {
             static FILE_OPERATIONS: std::sync::Mutex<()> = std::sync::Mutex::new(());
             let _operation = FILE_OPERATIONS.lock().map_err(|e| e.to_string())?;
@@ -449,15 +454,12 @@ pub async fn plugin_call(
                 return Err("Transfer has not completed".into());
             }
             let library = app.state::<crate::library::LibraryState>();
-            let youtube = method == "library.import" && plugin_id == "player.youtube";
-            // Work from a copy: a decoder may still own the original staging file.
-            let copy_dir = state.root.join("imports").join(&plugin_id);
-            std::fs::create_dir_all(&copy_dir).map_err(|e| e.to_string())?;
-            let copy = copy_dir.join(source.path.file_name().ok_or("Source has no filename")?);
-            if !youtube {
-                std::fs::copy(&source.path, &copy).map_err(|e| e.to_string())?;
-            }
+            let work = state.root.join("imports").join(&plugin_id);
             if method == "library.replace" {
+                // A decoder may still own the original staging file.
+                let staging = import_media::StagingDir::new(&work)?;
+                let copy = staging.path().join(source.path.file_name().ok_or("Source has no filename")?);
+                std::fs::copy(&source.path, &copy).map_err(|e| e.to_string())?;
                 let track = crate::library::replace_track_with_file(
                     field(&args, "trackId")?,
                     copy.to_string_lossy().into(),
@@ -471,34 +473,7 @@ pub async fn plugin_call(
                 );
                 value(track)
             } else {
-                let target = if youtube {
-                    import_media::save_youtube(library.data_dir(), &copy_dir, &source.path, &source.resource)?
-                } else {
-                let (artist, album) = crate::import_paths::extract_audio_metadata(&copy);
-                let target_dir = crate::import_paths::build_metadata_based_path(
-                    library.data_dir(),
-                    artist.as_deref(),
-                    album.as_deref(),
-                );
-                std::fs::create_dir_all(&target_dir).map_err(|e| e.to_string())?;
-                let mut target = target_dir.join(copy.file_name().unwrap());
-                if target.exists()
-                    && crate::library::hash_file(&target) != crate::library::hash_file(&copy)
-                {
-                    let hash =
-                        crate::library::hash_file(&copy).ok_or("Could not hash imported file")?;
-                    target = target_dir.join(format!(
-                        "{}-{}.{}",
-                        copy.file_stem().unwrap_or_default().to_string_lossy(),
-                        &hash[..12],
-                        copy.extension().unwrap_or_default().to_string_lossy()
-                    ));
-                }
-                if !target.exists() {
-                    std::fs::copy(&copy, &target).map_err(|e| e.to_string())?;
-                }
-                target
-                };
+                let target = import_media::save(library.data_dir(), &work, &source.path, &source.resource)?;
                 let relative = target
                     .strip_prefix(library.data_dir())
                     .map_err(|e| e.to_string())?
@@ -529,7 +504,6 @@ pub async fn plugin_call(
                         }
                     }
                 }
-                if !youtube { let _ = std::fs::remove_file(copy); }
                 if let Some(t) = &track {
                     app.state::<crate::playback::PlaybackState>().adopt_track(
                         &plugin_id,
