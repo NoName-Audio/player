@@ -1,4 +1,4 @@
-:where(.settings-panel) :where(.update-card, .plugin-card, .contributor-link, .notice, .device-preview, .folder-card) {
+:where(.settings-panel) :where(.update-card, .plugin-card, .plugin-settings-card, .contributor-link, .notice, .device-preview, .folder-card) {
   background: linear-gradient(135deg, color-mix(in srgb, var(--color-text) 7%, transparent), color-mix(in srgb, var(--color-text) 2%, transparent));
   border: 1px solid color-mix(in srgb, var(--color-text) 12%, transparent);
   -webkit-backdrop-filter: blur(24px) saturate(1.2);
@@ -6,7 +6,7 @@
   box-shadow: inset 0 1px 0 color-mix(in srgb, var(--color-text) 6%, transparent), 0 8px 24px color-mix(in srgb, var(--color-shadow) 10%, transparent);
 }
 
-:where(.settings-panel) :where(.update-card, .plugin-card) {
+:where(.settings-panel) :where(.update-card, .plugin-card, .plugin-settings-card) {
   padding: var(--panel-padding);
   border-radius: 8px;
 }

@@ -9,6 +9,28 @@ import SettingsToggle from '../../components/SettingsToggle.vue';
 import PluginStatus from './PluginStatus.vue';
 defineProps<{ node: UiNode; manifest?: PluginManifest; fields: Record<string, string | boolean>; busy: boolean; pendingButton?: string; path?: string; selection?: ReadonlySet<string>; unavailable?: ReadonlySet<string> }>();
 const emit = defineEmits<{ action: [action: string, payload?: Record<string, unknown>, button?: string]; select: [id: string, checked: boolean] }>();
+const fileError = ref('');
+const readingFile = ref(false);
+const filePicker = ref<HTMLInputElement>();
+async function importTextFile(event: Event, action: string) {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = '';
+  if (!file || readingFile.value) return;
+  fileError.value = '';
+  if (!file.size || file.size > 64 * 1024) {
+    fileError.value = 'Choose a nonempty text file no larger than 64 KiB.';
+    return;
+  }
+  readingFile.value = true;
+  try {
+    emit('action', action, { text: await file.text() });
+  } catch {
+    fileError.value = 'Could not read the selected file.';
+  } finally {
+    readingFile.value = false;
+  }
+}
 const resultButton = (path: string | undefined, resourceId: string, action: string) => JSON.stringify([path || '', resourceId, action]);
 const openDownload = ref<string>();
 const formats = [
@@ -34,12 +56,24 @@ onMounted(() => window.addEventListener('click', closeDownload));
 onUnmounted(() => window.removeEventListener('click', closeDownload));
 </script>
 <template>
-  <div v-if="node.type === 'group'" class="plugin-group">
+  <div v-if="node.type === 'group'" class="plugin-group" :class="{ 'plugin-card-grid': node.layout === 'cards', 'plugin-settings-card': node.layout === 'card' }">
     <h3 v-if="node.title">{{ node.title }}</h3>
     <PluginTree v-for="(child, index) in node.children || []" :key="index" :node="child" :manifest="manifest" :fields="fields" :busy="busy" :pending-button="pendingButton" :path="`${path || ''}/${index}`" @action="(action, payload, button) => emit('action', action, payload, button)" />
   </div>
+  <div v-else-if="node.type === 'account'" class="plugin-account">
+    <span class="plugin-account-avatar" aria-hidden="true">
+      <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="8" r="3"/><path d="M5 20v-2a7 7 0 0 1 14 0v2"/></svg>
+      <img v-if="node.avatarUrl" :key="node.avatarUrl" :src="node.avatarUrl" alt="" referrerpolicy="no-referrer" @error="($event.target as HTMLImageElement).hidden = true" />
+    </span>
+    <span>{{ node.text }}</span>
+  </div>
   <p v-else-if="node.type === 'text' && node.text" :class="{ 'plugin-error': node.tone === 'error' }">{{ node.text }}</p>
   <PluginStatus v-else-if="node.type === 'status' && manifest" :node="node" :manifest="manifest"><PluginTree v-for="(child, index) in node.children || []" :key="index" :node="child" :manifest="manifest" :fields="fields" :busy="busy" :pending-button="pendingButton" :path="`${path || ''}/${index}`" @action="(action, payload, button) => emit('action', action, payload, button)" /></PluginStatus>
+  <div v-else-if="node.type === 'input' && node.inputType === 'text-file' && node.action" class="plugin-field form-field">
+    <button type="button" class="control-button" :disabled="busy || readingFile" :aria-busy="busy || readingFile" @click="filePicker?.click()">{{ node.label }}</button>
+    <input ref="filePicker" hidden type="file" accept=".txt,text/plain" :disabled="busy || readingFile" @change="importTextFile($event, node.action)" />
+    <span v-if="fileError" role="alert" class="plugin-error">{{ fileError }}</span>
+  </div>
   <label v-else-if="node.type === 'input' && node.key" class="plugin-field form-field">
     <span>{{ node.label }}</span><input v-model="fields[node.key]" class="form-input" :type="node.inputType === 'password' ? 'password' : 'text'" :autocomplete="node.inputType === 'password' ? 'new-password' : 'off'" :disabled="busy" />
   </label>
@@ -91,4 +125,12 @@ onUnmounted(() => window.removeEventListener('click', closeDownload));
 .plugin-result-progress progress { flex: 1; min-width: 0; height: 6px; accent-color: var(--color-accent); }
 .plugin-result-progress span { flex-shrink: 0; font-variant-numeric: tabular-nums; }
 @media(max-width: 650px) { .plugin-result { flex-wrap: wrap; }.plugin-result > .track-cover-sm { width: 32px; height: 32px; }.plugin-result-actions { width: 100%; justify-content: flex-end; } }
+</style>
+<style scoped>
+.plugin-card-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 17rem), 1fr)); align-items: start; }
+.plugin-settings-card { min-width: 0; align-content: start; overflow-wrap: anywhere; }
+.plugin-settings-card :deep(.control-button) { width: 100%; min-height: 44px; white-space: normal; }
+.plugin-account { display: flex; align-items: center; gap: 12px; }
+.plugin-account-avatar { position: relative; display: grid; place-items: center; width: 44px; height: 44px; flex: 0 0 44px; border: 1px solid currentColor; border-radius: 50%; overflow: hidden; }
+.plugin-account-avatar img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
 </style>

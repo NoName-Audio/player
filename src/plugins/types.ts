@@ -62,10 +62,12 @@ export interface SearchItem {
 export interface SearchResult { items: SearchItem[]; nextCursor: string | null; pending?: boolean; searchId?: string; error?: string }
 export type SearchRefresh = SearchItem[] | { items: SearchItem[]; pending?: boolean; searchId?: string; error?: string };
 export interface UiNode {
-  type: 'group' | 'text' | 'input' | 'button' | 'toggle' | 'results' | 'status';
+  type: 'group' | 'text' | 'input' | 'button' | 'toggle' | 'results' | 'status' | 'account';
   /** Status children open a responsive popup; title defaults to the manifest name. */
   title?: string; children?: UiNode[]; text?: string; tone?: string;
-  key?: string; label?: string; value?: string | boolean; inputType?: 'text' | 'password';
+  avatarUrl?: string;
+  layout?: 'cards' | 'card';
+  key?: string; label?: string; value?: string | boolean; inputType?: 'text' | 'password' | 'text-file';
   action?: string; payload?: Record<string, unknown>; disabled?: boolean; items?: SearchItem[];
 }
 export interface PluginEvent { pluginId: string; generation: number; revision: number; topic: string; payload: unknown }

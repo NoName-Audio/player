@@ -205,8 +205,9 @@ export function usePluginHost(): PluginHost { const host = inject(key); if (!hos
 export function validateUiNode(node: unknown, depth = 0): UiNode {
   if (!node || typeof node !== 'object' || depth > 12) throw new Error('Invalid plugin view');
   const n = node as UiNode;
-  if (!['group', 'text', 'input', 'button', 'toggle', 'results', 'status'].includes(n.type)) throw new Error('Unknown plugin UI node');
+  if (!['group', 'text', 'input', 'button', 'toggle', 'results', 'status', 'account'].includes(n.type)) throw new Error('Unknown plugin UI node');
   for (const key of ['title', 'text', 'label', 'action', 'key'] as const) if (n[key] !== undefined && (typeof n[key] !== 'string' || n[key]!.length > 4000)) throw new Error('Invalid UI text');
+  if (n.avatarUrl !== undefined && (typeof n.avatarUrl !== 'string' || !/^https:\/\/(?:yt3\.ggpht\.com|yt3\.googleusercontent\.com|lh3\.googleusercontent\.com)\/[a-zA-Z0-9_./=%-]{1,1000}$/.test(n.avatarUrl))) throw new Error('Invalid account avatar URL');
   if (n.type === 'status' && (!n.label?.trim() || !['active', 'error', 'success'].includes(n.tone || ''))) throw new Error('Invalid plugin status');
   if (n.type === 'input' && (!n.key || !/^[a-z0-9-]{1,64}$/.test(n.key))) throw new Error('Invalid field key');
   if (n.value !== undefined && typeof n.value !== 'string' && typeof n.value !== 'boolean') throw new Error('Invalid field value');

@@ -63,6 +63,7 @@ class ApkPlugins(private val activity: Activity) : Plugin(activity) {
     private val runtime = synchronized(executor) {
         sharedRuntime ?: InstalledApkRuntime(activity.applicationContext).also { sharedRuntime = it }
     }
+    init { runtime.activity = java.lang.ref.WeakReference(activity) }
     private val installer = CatalogApkInstaller(activity, runtime, ::startActivityForResult)
     private val selfUpdater = SelfUpdater(activity, ::startActivityForResult)
 
@@ -124,6 +125,7 @@ internal class PluginClassLoader(apk: String, libraries: String, private val hos
 
 /** Access is serialized by the Tauri adapter. Kept separate for device integration tests. */
 internal class InstalledApkRuntime(private val context: Context, private val hostCall: (Long, String, String) -> String = NativeHostBridge::call) {
+    @Volatile internal var activity: java.lang.ref.WeakReference<Activity>? = null
     // Retain loaders: JNI libraries cannot be safely hot-replaced in a live process.
     private val loaded = mutableMapOf<String, Loaded>()
     private val minimumGeneration = mutableMapOf<String, Long>()
@@ -241,7 +243,12 @@ internal class InstalledApkRuntime(private val context: Context, private val hos
             try {
                 val constructor = try { module.type.getConstructor(Context::class.java) }
                     catch (_: NoSuchMethodException) { null }
-                val instance = constructor?.newInstance(context.applicationContext)
+                val owner = activity?.get()
+                val activityConstructor = if (owner == null) null else try {
+                    module.type.getConstructor(Activity::class.java)
+                } catch (_: NoSuchMethodException) { null }
+                val instance = activityConstructor?.newInstance(owner)
+                    ?: constructor?.newInstance(context.applicationContext)
                     ?: module.type.getDeclaredConstructor().newInstance()
                 module.instance = instance
                 require(module.type.getMethod("apiVersion").invoke(instance) == 2) { "Unsupported native API" }
