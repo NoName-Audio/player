@@ -122,7 +122,27 @@ onUnmounted(() => window.removeEventListener('click', closeDownload));
 .plugin-result > .track-cover-sm { width: 36px; height: 36px; border-radius: 3px; flex-shrink: 0; }
 .plugin-result-copy { min-width: 0; flex: 1; display: grid; gap: var(--space-1); }.plugin-result-copy strong,.plugin-result-copy span { overflow-wrap: anywhere; }.plugin-result-copy span { color: var(--color-text-muted); font-size: 12px; }.plugin-result-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
 .plugin-result-progress { display: flex; align-items: center; gap: var(--space-2); }
-.plugin-result-progress progress { flex: 1; min-width: 0; height: 6px; accent-color: var(--color-accent); }
+.plugin-result-progress progress {
+  appearance: none;
+  flex: 1;
+  min-width: 0;
+  height: 8px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 4px;
+  background: var(--color-surface);
+}
+.plugin-result-progress progress::-webkit-progress-bar { background: var(--color-surface); border-radius: inherit; }
+.plugin-result-progress progress::-webkit-progress-value {
+  background: color-mix(in srgb, var(--color-accent) 92%, transparent);
+  border-radius: 4px;
+  transition: width 0.22s linear;
+}
+.plugin-result-progress progress::-moz-progress-bar { background: var(--color-accent); border-radius: 4px; }
+.plugin-result-progress progress:indeterminate {
+  background: repeating-linear-gradient(135deg, var(--color-accent) 0 4px, var(--color-surface) 4px 8px);
+}
+.plugin-result-progress progress:indeterminate::-webkit-progress-bar { background: transparent; }
 .plugin-result-progress span { flex-shrink: 0; font-variant-numeric: tabular-nums; }
 @media(max-width: 650px) { .plugin-result { flex-wrap: wrap; }.plugin-result > .track-cover-sm { width: 32px; height: 32px; }.plugin-result-actions { width: 100%; justify-content: flex-end; } }
 </style>

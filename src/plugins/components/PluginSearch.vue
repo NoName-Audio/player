@@ -1,10 +1,12 @@
 <script setup lang="ts">
-import { computed, onUnmounted, ref, watch } from 'vue';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { usePluginHost, validateUiNode } from '../host';
 import type { SearchRefresh, SearchResult, SearchItem, UiContribution } from '../types';
 import PluginTree from './PluginTree.vue';
+import AppIcon from '../../components/AppIcon.vue';
+import ResponsivePopup from '../../components/ResponsivePopup.vue';
 const props = defineProps<{ contribution: UiContribution; query: string; sharedRequest?: object }>();
 const emit = defineEmits<{ sharedSearchStarted: [] }>();
 const host = usePluginHost(); const items = ref<SearchItem[]>([]); const error = ref(''); const loading = ref(false); const submitted = ref('');
@@ -23,6 +25,10 @@ function libraryStatus(ids: string[]) {
   return invoke<string[]>('plugin_call', { pluginId: plugin.manifest.id, generation: plugin.generation, method: 'library.status', args: { ids } });
 }
 const selected = ref(new Set<string>());
+const batchMenuOpen = ref(false);
+function closeBatchMenu() { batchMenuOpen.value = false; }
+onMounted(() => window.addEventListener('click', closeBatchMenu));
+onUnmounted(() => window.removeEventListener('click', closeBatchMenu));
 const present = ref(new Set<string>());
 const checking = ref(false);
 const statusError = ref('');
@@ -31,6 +37,8 @@ const rows = computed(() => playlist.value ? items.value.map(item => present.val
   ...item, status: 'Already in library', actions: item.actions?.filter(action => action.id !== batch.value?.action),
 } : item) : items.value);
 const available = computed(() => rows.value.filter(item => !present.value.has(item.id) && item.actions?.some(action => action.id === batch.value?.action && action.downloadOptions && !action.disabled)));
+const batchDisabled = computed(() => loading.value || providerPending.value || checking.value || Boolean(statusError.value) || actionBusy.value || !available.value.some(item => selected.value.has(item.id)));
+watch(batchDisabled, disabled => { if (disabled) closeBatchMenu(); });
 const unavailable = computed(() => new Set(rows.value.filter(item => !available.value.includes(item)).map(item => item.id)));
 const ids = computed(() => JSON.stringify(batch.value ? items.value.map(item => item.id) : []));
 async function checkLibrary() {
@@ -56,9 +64,10 @@ onUnmounted(() => { void unlisten.then(stop => stop(), () => {}); });
 function select(id: string, checked: boolean) {
   if (checked) selected.value.add(id); else selected.value.delete(id);
 }
-async function downloadSelected() {
+async function downloadSelected(video: boolean) {
+  closeBatchMenu();
   const operation = batch.value;
-  if (!operation || actionBusy.value || checking.value || statusError.value) return;
+  if (!operation || batchDisabled.value) return;
   const seq = sequence;
   const candidates = available.value.filter(item => selected.value.has(item.id));
   actionBusy.value = true;
@@ -72,7 +81,7 @@ async function downloadSelected() {
         if (seq !== sequence || disposed) break;
         if (found.length) present.value.add(item.id);
         else {
-          await host.call(props.contribution.pluginId, 'action', { action: operation.action, payload: { ...operation.payload, resourceId: item.id } });
+          await host.call(props.contribution.pluginId, 'action', { action: operation.action, payload: { ...operation.payload, resourceId: item.id, video } });
           // Desktop acknowledges the start; Android returns after import.
           const deadline = Date.now() + 10 * 60_000;
           while (seq === sequence && !disposed) {
@@ -158,7 +167,15 @@ onUnmounted(() => { disposed = true; sequence++; });
     <p v-else-if="!loading && !providerPending && !items.length">No matches for “{{ submitted }}”.</p>
     <div v-if="playlist && items.length" class="plugin-search-pages">
       <button class="control-button" :disabled="checking || Boolean(statusError) || actionBusy || !available.length" @click="selected = new Set(available.map(item => item.id))">Select available</button>
-      <button class="control-button" :disabled="checking || Boolean(statusError) || actionBusy || !available.some(item => selected.has(item.id))" @click="downloadSelected">{{ batch?.label }}</button>
+      <ResponsivePopup anchored :open="batchMenuOpen" @close="closeBatchMenu">
+        <template #trigger>
+          <button type="button" class="control-button" :disabled="batchDisabled" :aria-expanded="batchMenuOpen" @click.stop="batchMenuOpen = !batchMenuOpen">
+            Download selected <AppIcon name="dropdown" :size="12" />
+          </button>
+        </template>
+        <button type="button" class="batch-format" @click="downloadSelected(false)">Audio (WebM/Opus)</button>
+        <button type="button" class="batch-format" @click="downloadSelected(true)">Video (MP4)</button>
+      </ResponsivePopup>
     </div>
     <p v-if="statusError" role="alert">Could not check library: {{ statusError }} <button class="control-button" @click="checkLibrary">Retry</button></p>
     <PluginTree :node="{ type: 'results', items: rows }" :fields="{}" :busy="loading || actionBusy || checking || Boolean(statusError)" :pending-button="pendingButton" :selection="playlist ? selected : undefined" :unavailable="unavailable" @action="action" @select="select" />
@@ -173,5 +190,7 @@ onUnmounted(() => { disposed = true; sequence++; });
 .plugin-search { margin-top: var(--space-2); }
 .plugin-search .section-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4); }
 .plugin-search-pages { display: flex; justify-content: flex-end; gap: var(--space-3); margin-top: var(--space-3); }
+.batch-format { display: block; width: 100%; min-height: 40px; text-align: left; background: none; border: none; color: var(--color-text); font-size: var(--fs-button); padding: var(--space-2) var(--space-4); cursor: pointer; }
+.batch-format:hover, .batch-format:focus-visible { background: var(--color-surface-hover); }
 .plugin-search > p { color: var(--color-text-muted); }
 </style>
