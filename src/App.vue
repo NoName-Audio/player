@@ -4026,6 +4026,47 @@ const pluginDownloads = computed(() => pluginHost.plugins.value.flatMap(plugin =
   return plugin.enabled && progress?.generation === plugin.generation ? [{ manifest: plugin.manifest, progress }] : [];
 }));
 const activePluginPage = computed(() => pluginPages.value.find(page => activeNav.value === `plugins/${page.pluginId}/${page.id}`));
+const youtubeSignInPage = computed(() => activePluginPage.value?.pluginId === 'player.youtube' && activePluginPage.value.id === 'sign-in');
+const youtubeSignInSlot = ref<HTMLElement>();
+const youtubeSignInError = ref('');
+const youtubeSignInSaving = ref(false);
+watch(youtubeSignInSlot, (slot, _, onCleanup) => {
+  if (!slot) return;
+  youtubeSignInError.value = '';
+  let frame = 0;
+  let previous = '';
+  let stopped = false;
+  const call = (action: string, payload = {}) => pluginHost.call('player.youtube', 'action', { action, payload });
+  const sync = async () => {
+    const rect = slot.getBoundingClientRect();
+    const scale = devicePixelRatio;
+    const payload = { x: Math.round(rect.left * scale), y: Math.round(rect.top * scale), width: Math.round(rect.width * scale), height: Math.round(rect.height * scale) };
+    const visible = !showMobileNav.value && payload.width > 0 && payload.height > 0;
+    const key = visible ? JSON.stringify(payload) : 'hidden';
+    try {
+      if (previous !== key) {
+        previous = key;
+        await call(visible ? 'sign-in-position' : 'sign-in-hide', payload);
+      }
+    } catch (error) { if (!stopped) youtubeSignInError.value = String(error); }
+    if (!stopped) frame = requestAnimationFrame(sync);
+  };
+  frame = requestAnimationFrame(sync);
+  onCleanup(() => {
+    stopped = true;
+    cancelAnimationFrame(frame);
+    void call('sign-in-close').catch(() => {});
+  });
+}, { flush: 'post' });
+async function saveYoutubeSignIn() {
+  youtubeSignInSaving.value = true;
+  youtubeSignInError.value = '';
+  try {
+    await pluginHost.call('player.youtube', 'action', { action: 'sign-in-save' });
+    if (youtubeSignInPage.value) openSettings('plugin:player.youtube/authorization');
+  } catch (error) { youtubeSignInError.value = String(error); }
+  finally { youtubeSignInSaving.value = false; }
+}
 async function runPluginTrackAction(action: UiContribution) {
   const track = trackContextMenu.value?.track; trackContextMenu.value = null;
   if (!track) return;
@@ -4382,6 +4423,9 @@ onUnmounted(() => {
           <button v-if="activeNav === 'home'" class="control-button control-button-compact import-files-action" @click="uploadFiles"><AppIcon name="folder" /> Add files</button>
           <div v-else id="debug-sql-header-actions" />
         </template>
+        <template v-else-if="youtubeSignInPage" #actions>
+          <button class="control-button control-button-compact" :disabled="youtubeSignInSaving" @click="saveYoutubeSignIn">Use this session</button>
+        </template>
         <template v-if="activeNav === 'playlists' && playlistTab === 'smart' && editingSP" #title>
           <input v-model="editingSP.name" class="page-title-input" aria-label="Playlist name" placeholder="Playlist name" @input="saveSP()" @click.stop />
         </template>
@@ -4639,6 +4683,10 @@ onUnmounted(() => {
           </section>
         </template>
 
+        <div v-else-if="youtubeSignInPage" style="display: flex; flex-direction: column; height: 100%">
+          <p v-if="youtubeSignInError" role="alert">{{ youtubeSignInError }}</p>
+          <div ref="youtubeSignInSlot" style="flex: 1; min-height: 0" />
+        </div>
         <template v-else-if="activePluginPage">
           <PluginPanel :key="activePluginPage.key" :plugin-id="activePluginPage.pluginId" :view-id="activePluginPage.id" :context="pluginPageContext" />
         </template>
