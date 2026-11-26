@@ -264,10 +264,8 @@ jobs:
         with:
           targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
 
-      - name: Cache Rust artifacts
-        uses: swatinem/rust-cache@v2
-        with:
-          workspaces: ./src-tauri -> target
+      # Android links FFmpeg archives built below, outside Cargo's fingerprint.
+      # Do not restore Rust artifacts containing an older copy of those archives.
 
       - name: Cache Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -304,6 +302,15 @@ jobs:
             echo "Missing unsigned APK at $unsigned_apk" >&2
             exit 1
           fi
+
+          # Check the packaged libraries, not just FFmpeg's configure output.
+          for abi in arm64-v8a armeabi-v7a x86 x86_64; do
+            entry="lib/$abi/libplayer_lib.so"
+            if ! unzip -p "$unsigned_apk" "$entry" | LC_ALL=C grep -aFo 'MP4 (MPEG-4 Part 14)' >/dev/null; then
+              echo "Missing MP4 muxer marker in $entry" >&2
+              exit 1
+            fi
+          done
 
           if [[ -z "$ANDROID_KEYSTORE_BASE64" || -z "$ANDROID_KEYSTORE_ALIAS" || -z "$KEYSTORE_PASS" ]]; then
             echo "Android signing secrets are missing. Expected ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_ALIAS, and KEYSTORE_PASS." >&2
