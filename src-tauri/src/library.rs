@@ -3467,6 +3467,31 @@ pub fn index_track_by_path(
 }
 
 #[tauri::command]
+pub async fn get_embedded_track_tags(id: i64, state: tauri::State<'_, LibraryState>) -> Result<Vec<(String, String)>, String> {
+    let conn = state.conn.clone();
+    let data_dir = state.data_dir.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let source = track_source_for_track(&conn.lock().unwrap(), &data_dir, id)?;
+        let path = match source {
+            Some(TrackSource::File { path }) | Some(TrackSource::CueSegment { audio_path: path, .. }) => path,
+            _ => return Err("No local file for this track".into()),
+        };
+        #[cfg(feature = "native-video")]
+        if crate::video::supported(&path) || path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("m4a")) {
+            return crate::video::native::embedded_tags(&path).map_err(|e| e.to_string());
+        }
+        let file = Probe::open(&path).and_then(|probe| probe.read()).map_err(|e| e.to_string())?;
+        Ok(file.tags().iter().flat_map(|tag| tag.items().map(move |item| {
+            let key = item.key();
+            let name = key.map_key(tag.tag_type()).map(str::to_owned).unwrap_or_else(|| format!("{key:?}"));
+            let value = item.value().text().or_else(|| item.value().locator()).map(str::to_owned)
+                .unwrap_or_else(|| "[Binary data]".into());
+            (name, value)
+        })).collect())
+    }).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 pub fn reindex(app: tauri::AppHandle, state: tauri::State<'_, LibraryState>) -> Result<(), String> {
     state.reindex(&app);
     Ok(())

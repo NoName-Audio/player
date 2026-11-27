@@ -216,6 +216,21 @@ const localSearchOffset = ref(0);
 const localSearchHasMore = ref(false);
 const localSearchLoading = ref(false);
 const editingTrack = ref<Track | null>(null);
+const embeddedTrackTags = ref<[string, string][]>([]);
+const embeddedTagsLoading = ref(false);
+const embeddedTagsError = ref('');
+watch(() => editingTrack.value?.id, (id, _, onCleanup) => {
+  embeddedTrackTags.value = [];
+  embeddedTagsError.value = '';
+  embeddedTagsLoading.value = id !== undefined;
+  if (id === undefined) return;
+  let active = true;
+  onCleanup(() => { active = false; });
+  void invoke<[string, string][]>('get_embedded_track_tags', { id })
+    .then(tags => { if (active) embeddedTrackTags.value = tags; })
+    .catch(error => { if (active) embeddedTagsError.value = String(error); })
+    .finally(() => { if (active) embeddedTagsLoading.value = false; });
+});
 const editForm = ref({
   title: '',
   artist: '',
@@ -5477,6 +5492,18 @@ onUnmounted(() => {
                 <option v-for="rarity in TRACK_RARITY_OPTIONS" :key="rarity" :value="rarity">{{ rarity }}</option>
               </AppSelect>
             </label>
+            <section class="embedded-track-tags">
+              <h3>Embedded file tags</h3>
+              <p v-if="embeddedTagsLoading" role="status">Reading file tags…</p>
+              <p v-else-if="embeddedTagsError" role="alert">Could not read file tags: {{ embeddedTagsError }}</p>
+              <p v-else-if="!embeddedTrackTags.length">No embedded tags found.</p>
+              <dl v-else>
+                <template v-for="([name, value], index) in embeddedTrackTags" :key="index">
+                  <dt>{{ name }}</dt>
+                  <dd>{{ value }}</dd>
+                </template>
+              </dl>
+            </section>
           </div>
           <div class="modal-footer">
             <button class="control-button" @click="editingTrack = null">Cancel</button>
@@ -6722,6 +6749,10 @@ section h2 { font-size: var(--fs-h2); font-weight: 800; margin-bottom: var(--spa
 .field input:focus { outline: 1px solid var(--color-accent); }
 .edit-track-modal { width: 460px; }
 .update-prompt-modal { width: 340px; background: var(--color-bg); }
+.embedded-track-tags { grid-column: 1 / -1; min-width: 0; }
+.embedded-track-tags dl { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: var(--space-2) var(--space-3); }
+.embedded-track-tags dt { color: var(--color-text-muted); overflow-wrap: anywhere; }
+.embedded-track-tags dd { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
 .edit-track-body {
   max-height: min(70vh, 560px);
   overflow-y: auto;

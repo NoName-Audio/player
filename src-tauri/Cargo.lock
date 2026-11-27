@@ -3732,7 +3732,7 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
 name = "player"
-version = "0.3.33"
+version = "0.3.34"
 dependencies = [
  "base64 0.22.1",
  "blake3",
@@ -3771,6 +3771,7 @@ dependencies = [
  "tauri-plugin-opener",
  "tauri-plugin-process",
  "tauri-plugin-updater",
+ "time",
  "tiny_http",
  "tokio",
  "tracing",

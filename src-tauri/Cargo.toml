@@ -1,6 +1,6 @@
 [package]
 name = "player"
-version = "0.3.33"
+version = "0.3.34"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -17,7 +17,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [features]
 default = []
 tracy = ["dep:tracing-tracy"]
-native-video = ["dep:ffmpeg-next"]
+native-video = ["dep:ffmpeg-next", "dep:time"]
 native-video-static = ["native-video", "ffmpeg-next/static", "ffmpeg-next/software-resampling"]
 
 [build-dependencies]
@@ -25,6 +25,7 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 ffmpeg-next = { version = "9.1", optional = true, default-features = false, features = ["format", "software-scaling"] }
+time = { version = "0.3", features = ["formatting"], optional = true }
 player-plugin-sdk = { path = "../plugins/native-sdk" }
 libloading = "0.8"
 tokio = { version = "1", features = ["time"] }

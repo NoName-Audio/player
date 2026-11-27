@@ -283,6 +283,7 @@ pub fn run() {
             library::index_track_by_path,
             library::reindex,
             library::update_track,
+            library::get_embedded_track_tags,
             library::replace_track_with_file,
             library::toggle_like,
             library::get_artist_albums,

@@ -23,6 +23,15 @@ fn open_local_input(path: &Path) -> Result<ff::format::context::Input, ff::Error
     ff::format::input_with_dictionary(path, options)
 }
 
+pub(crate) fn embedded_tags(path: &Path) -> Result<Vec<(String, String)>, ff::Error> {
+    let input = open_local_input(path)?;
+    let mut tags: Vec<_> = input.metadata().iter().map(|(key, value)| (key.to_owned(), value.to_owned())).collect();
+    for stream in input.streams() {
+        tags.extend(stream.metadata().iter().map(|(key, value)| (format!("Stream {} · {key}", stream.index()), value.to_owned())));
+    }
+    Ok(tags)
+}
+
 pub(crate) fn container_metadata(path: &Path) -> Option<(Option<String>, Option<String>, Option<String>, Option<f64>)> {
     let input = open_local_input(path).ok()?;
     let tags = input.metadata();

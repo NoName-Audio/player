@@ -171,6 +171,13 @@ pub(super) fn save(root: &Path, work: &Path, source: &Path, resource: &ResourceI
 #[cfg(feature = "native-video")]
 fn write_tags(source: &Path, target: &Path, extension: &str, resource: &ResourceIdentity) -> Result<(), String> {
     use ffmpeg_next as ff;
+    let downloaded_at = if resource.plugin_id == "player.youtube" {
+        Some(time::OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Rfc3339)
+            .map_err(|e| e.to_string())?)
+    } else {
+        None
+    };
     let remux = || -> Result<(), (&'static str, ff::Error)> {
         ff::init().map_err(|e| ("initialize FFmpeg", e))?;
         let mut options = ff::Dictionary::new();
@@ -193,8 +200,19 @@ fn write_tags(source: &Path, target: &Path, extension: &str, resource: &Resource
                 tags.set(key, &value.replace('\0', ""));
             }
         }
+        if let Some(timestamp) = &downloaded_at {
+            tags.set("youtube_video_id", &resource.resource_id.replace('\0', ""));
+            tags.set("downloaded_at", timestamp);
+        }
         output.set_metadata(tags);
-        output.write_header().map_err(|e| ("write container header", e))?;
+        if extension == "mp4" && downloaded_at.is_some() {
+            // MP4 drops custom keys unless the muxer writes mdta tags.
+            let mut options = ff::Dictionary::new();
+            options.set("movflags", "use_metadata_tags");
+            output.write_header_with(options).map_err(|e| ("write container header", e))?;
+        } else {
+            output.write_header().map_err(|e| ("write container header", e))?;
+        }
         for (stream, mut packet) in input.packets() {
             if let Some(index) = streams[stream.index()] {
                 packet.rescale_ts(stream.time_base(), output.stream(index).unwrap().time_base());
@@ -280,22 +298,33 @@ mod tests {
         let input = root.join("preview.webm");
         std::fs::copy(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/audio-only.webm"), &input).unwrap();
         let mut resource = ResourceIdentity {
-            plugin_id: "test.plugin".into(), resource_id: "resource-a".into(),
+            plugin_id: "player.youtube".into(), resource_id: "abcdefghijk".into(),
             title: "A title".into(), artist: "An artist".into(), album: "An album".into(),
             duration_seconds: None, cover_hash: None,
         };
         let saved = save(&root, &root, &input, &resource).unwrap();
         let (title, artist, album, _) = crate::video::native::container_metadata(&saved).unwrap();
         assert_eq!((title.as_deref(), artist.as_deref(), album.as_deref()), (Some("A title"), Some("An artist"), Some("An album")));
+        assert_youtube_tags(&saved, &resource.resource_id);
         resource.title = "Changed title".into();
         assert_eq!(save(&root, &root, &source, &resource).unwrap(), saved);
-        resource.resource_id = "resource-b".into();
+        resource.resource_id = "lmnopqrstuv".into();
         // A previous job must not block or share the next import's staging path.
         let directory = root.join(".player-transactions/plugin-imports");
         std::fs::create_dir_all(directory.join(".import.partial")).unwrap();
         let video = save(&root, &root, &source, &resource).unwrap();
         let (title, _, _, _) = crate::video::native::container_metadata(&video).unwrap();
         assert_eq!(title.as_deref(), Some("Changed title"));
+        assert_youtube_tags(&video, &resource.resource_id);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    fn assert_youtube_tags(path: &Path, id: &str) {
+        let tags = crate::video::native::embedded_tags(path).unwrap();
+        let tag = |key: &str| tags.iter().find(|(name, _)| name.eq_ignore_ascii_case(key)).unwrap().1.as_str();
+        assert_eq!(tag("youtube_video_id"), id);
+        let today = time::OffsetDateTime::now_utc().date().to_string();
+        assert!(tag("downloaded_at").starts_with(&today));
+        assert!(tag("downloaded_at").ends_with('Z'));
     }
 }
