@@ -2121,11 +2121,7 @@ pub(crate) fn rel_path(data_dir: &Path, abs: &Path) -> String {
 }
 
 fn rel_to_abs_path(data_dir: &Path, rel: &str) -> PathBuf {
-    rel.split('/')
-        .fold(data_dir.to_path_buf(), |mut path, part| {
-            path.push(part);
-            path
-        })
+    data_dir.join(rel)
 }
 
 fn track_name_from_rel(rel: &str) -> String {
@@ -3464,9 +3460,9 @@ pub fn index_track_by_path(
         return Err("Path escapes library directory".to_string());
     }
 
-    let rel = rel_path(&state.data_dir, &canonical_abs);
+    let rel = rel_path(&data_dir, &canonical_abs);
     let conn = state.conn.lock().unwrap();
-    index_file(&conn, &state.data_dir, &canonical_abs).map_err(|e| e.to_string())?;
+    index_file(&conn, &data_dir, &canonical_abs).map_err(|e| e.to_string())?;
     get_track_by_path(&conn, &rel).map_err(|e| e.to_string())
 }
 
